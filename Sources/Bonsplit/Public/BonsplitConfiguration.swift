@@ -428,6 +428,23 @@ extension BonsplitConfiguration {
 
         // MARK: - Tab Bar
 
+        /// Controls whether the per-pane tab bar is rendered.
+        public enum TabBarVisibility: Int, Sendable, CaseIterable {
+            /// Always show the tab bar.
+            case always = 0
+            /// Never render the tab bar. Splits and tabs continue to function;
+            /// the host app is responsible for surfacing tab/split actions
+            /// (e.g. via context menu, command palette, or keyboard).
+            case never = 1
+            /// Render the tab bar only when the pane has more than one tab.
+            /// Single-tab panes hide the bar to keep the chrome minimal; the
+            /// bar appears automatically once a second tab is added.
+            case auto = 2
+        }
+
+        /// Whether the tab bar is rendered. Defaults to `.always`.
+        public var tabBarVisibility: TabBarVisibility
+
         /// Height of the tab bar
         public var tabBarHeight: CGFloat
 
@@ -522,6 +539,7 @@ extension BonsplitConfiguration {
         // MARK: - Initializer
 
         public init(
+            tabBarVisibility: TabBarVisibility = .always,
             tabBarHeight: CGFloat = 30,
             tabMinWidth: CGFloat = 140,
             tabMaxWidth: CGFloat = 220,
@@ -541,6 +559,7 @@ extension BonsplitConfiguration {
             chromeColors: ChromeColors = .init(),
             usesSharedBackdrop: Bool = false
         ) {
+            self.tabBarVisibility = tabBarVisibility
             self.tabBarHeight = tabBarHeight
             self.tabMinWidth = tabMinWidth
             self.tabMaxWidth = tabMaxWidth

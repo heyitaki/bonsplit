@@ -167,14 +167,23 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
         controller.draggingTab != nil || controller.activeDragTab != nil
     }
 
+    private var tabBarHidden: Bool {
+        switch bonsplitController.configuration.appearance.tabBarVisibility {
+        case .always: return false
+        case .never: return true
+        case .auto: return pane.tabs.count <= 1
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar
-            TabBarView(
-                pane: pane,
-                isFocused: isFocused,
-                showSplitButtons: showSplitButtons
-            )
+            if !tabBarHidden {
+                TabBarView(
+                    pane: pane,
+                    isFocused: isFocused,
+                    showSplitButtons: showSplitButtons
+                )
+            }
 
             // Content area with drop zones
             contentAreaWithDropZones
