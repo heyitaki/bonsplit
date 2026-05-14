@@ -47,6 +47,12 @@ public struct BonsplitConfiguration: Sendable {
     /// Whether to automatically close empty panes
     public var autoCloseEmptyPanes: Bool
 
+    /// When true (the default), clicking or double-clicking the empty area of
+    /// the tab bar (trailing space or background) creates a new tab. Hosts that
+    /// already expose a "new tab" button and menu item can disable this to
+    /// avoid the empty-area click creating an unintended tab.
+    public var allowsClickToCreateNewTab: Bool
+
     /// Controls how tab content views are managed when switching tabs
     public var contentViewLifecycle: ContentViewLifecycle
 
@@ -83,6 +89,7 @@ public struct BonsplitConfiguration: Sendable {
         allowTabReordering: Bool = true,
         allowCrossPaneTabMove: Bool = true,
         autoCloseEmptyPanes: Bool = true,
+        allowsClickToCreateNewTab: Bool = true,
         contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch,
         newTabPosition: NewTabPosition = .current,
         appearance: Appearance = .default
@@ -93,6 +100,7 @@ public struct BonsplitConfiguration: Sendable {
         self.allowTabReordering = allowTabReordering
         self.allowCrossPaneTabMove = allowCrossPaneTabMove
         self.autoCloseEmptyPanes = autoCloseEmptyPanes
+        self.allowsClickToCreateNewTab = allowsClickToCreateNewTab
         self.contentViewLifecycle = contentViewLifecycle
         self.newTabPosition = newTabPosition
         self.appearance = appearance
@@ -496,6 +504,13 @@ extension BonsplitConfiguration {
         /// Extra leading inset for the tab bar (e.g. for traffic light buttons when sidebar is collapsed)
         public var tabBarLeadingInset: CGFloat
 
+        /// Width at the leading/trailing edges of the tab bar where the bottom
+        /// separator line should not be drawn. Lets the host app keep its own
+        /// edge affordance (e.g. a sidebar reveal strip) visually unbroken by
+        /// the tab bar hairline.
+        public var tabBarBottomSeparatorLeadingInset: CGFloat
+        public var tabBarBottomSeparatorTrailingInset: CGFloat
+
         /// Tooltip text for the tab bar's right-side action buttons
         public var splitButtonTooltips: SplitButtonTooltips
 
@@ -553,6 +568,8 @@ extension BonsplitConfiguration {
             splitButtonBackdropStyle: SplitButtonBackdropStyle? = nil,
             splitButtonBackdropEffect: SplitButtonBackdropEffect? = nil,
             tabBarLeadingInset: CGFloat = 0,
+            tabBarBottomSeparatorLeadingInset: CGFloat = 0,
+            tabBarBottomSeparatorTrailingInset: CGFloat = 0,
             splitButtonTooltips: SplitButtonTooltips = .default,
             animationDuration: Double = 0.15,
             enableAnimations: Bool = true,
@@ -573,6 +590,8 @@ extension BonsplitConfiguration {
             self.splitButtonBackdropStyle = splitButtonBackdropStyle
             self.splitButtonBackdropEffect = splitButtonBackdropEffect
             self.tabBarLeadingInset = tabBarLeadingInset
+            self.tabBarBottomSeparatorLeadingInset = tabBarBottomSeparatorLeadingInset
+            self.tabBarBottomSeparatorTrailingInset = tabBarBottomSeparatorTrailingInset
             self.splitButtonTooltips = splitButtonTooltips
             self.animationDuration = animationDuration
             self.enableAnimations = enableAnimations

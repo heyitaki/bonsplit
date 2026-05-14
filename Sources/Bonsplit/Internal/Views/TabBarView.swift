@@ -1643,6 +1643,7 @@ struct TabBarView: View {
 
     private func performNewTerminalSplitButtonAction() -> Bool {
         guard splitViewController.isInteractive else { return false }
+        guard controller.configuration.allowsClickToCreateNewTab else { return false }
         guard let button = visibleSplitButtons.first(where: { $0.action == .newTerminal }) else {
             return false
         }
@@ -1725,6 +1726,8 @@ struct TabBarView: View {
 
     @ViewBuilder
     private func tabBarBottomSeparator(totalWidth: CGFloat) -> some View {
+        let leadingInset = max(0, appearance.tabBarBottomSeparatorLeadingInset)
+        let trailingInset = max(0, appearance.tabBarBottomSeparatorTrailingInset)
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             HStack(spacing: 0) {
@@ -1737,13 +1740,19 @@ struct TabBarView: View {
                     totalWidth: totalWidth,
                     gap: gapRange
                 )
+                if leadingInset > 0 {
+                    Color.clear.frame(width: leadingInset, height: 1)
+                }
                 Rectangle()
                     .fill(separator)
-                    .frame(width: segments.left, height: 1)
+                    .frame(width: max(0, segments.left - leadingInset), height: 1)
                 Spacer(minLength: 0)
                 Rectangle()
                     .fill(separator)
-                    .frame(width: segments.right, height: 1)
+                    .frame(width: max(0, segments.right - trailingInset), height: 1)
+                if trailingInset > 0 {
+                    Color.clear.frame(width: trailingInset, height: 1)
+                }
             }
         }
     }
@@ -2258,6 +2267,13 @@ private struct TabBarDragAndHoverView: NSViewRepresentable {
         private var windowDidResignKeyObserver: NSObjectProtocol?
         private var localMouseMonitor: Any?
         private var isHovering = false
+        // Tracks the most recent mouseDown that this view actually received, so
+        // we can detect a "true" double-click on the tab-bar empty area.
+        // AppKit's `event.clickCount` is window-scoped: a click on a tab close
+        // button immediately followed by a click on this background still
+        // arrives here with clickCount=2, which used to trigger the titlebar
+        // minimize/zoom action when the user was really just closing two tabs.
+        private var lastSelfMouseDown: (timestamp: TimeInterval, location: NSPoint)?
 
         override var mouseDownCanMoveWindow: Bool { false }
 
@@ -2317,14 +2333,19 @@ private struct TabBarDragAndHoverView: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
+            let isOwnDoubleClick = isMouseDownOwnDoubleClick(event)
+            lastSelfMouseDown = (event.timestamp, event.locationInWindow)
 #if DEBUG
-            dlog("tab.bar.bg.mouseDown isMinimal=\(isMinimalMode ? 1 : 0) clickCount=\(event.clickCount)")
+            dlog(
+                "tab.bar.bg.mouseDown isMinimal=\(isMinimalMode ? 1 : 0) " +
+                "clickCount=\(event.clickCount) ownDouble=\(isOwnDoubleClick ? 1 : 0)"
+            )
 #endif
             guard let window else {
                 super.mouseDown(with: event)
                 return
             }
-            if event.clickCount >= 2 {
+            if isOwnDoubleClick {
                 if isMinimalMode {
                     let action = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleActionOnDoubleClick"] as? String
                     switch action {
@@ -2345,6 +2366,23 @@ private struct TabBarDragAndHoverView: NSViewRepresentable {
             window.isMovable = true
             window.performDrag(with: event)
             window.isMovable = wasMovable
+        }
+
+        /// AppKit reports clickCount=2 whenever two clicks land in the same
+        /// window within the double-click interval, regardless of which views
+        /// handled them. The titlebar-style minimize/zoom action and the
+        /// new-tab fallback must only fire when both clicks were actually on
+        /// this empty-area view, otherwise closing two tabs in quick
+        /// succession (close button → close button) gets interpreted as a
+        /// double-click on the tab bar.
+        private func isMouseDownOwnDoubleClick(_ event: NSEvent) -> Bool {
+            guard event.clickCount >= 2 else { return false }
+            guard let prev = lastSelfMouseDown else { return false }
+            let interval = NSEvent.doubleClickInterval
+            guard event.timestamp - prev.timestamp <= interval else { return false }
+            let dx = event.locationInWindow.x - prev.location.x
+            let dy = event.locationInWindow.y - prev.location.y
+            return hypot(dx, dy) <= 6
         }
 
         func syncHoverStateToCurrentMouseLocation() {
@@ -2459,6 +2497,11 @@ struct TabBarDragZoneView: NSViewRepresentable {
         var performWindowDrag: ((NSEvent) -> Bool)?
         private var pendingWindowDragEvent: NSEvent?
         private var pendingWindowDragStart: NSPoint?
+        // See `TabBarBackgroundNSView.lastSelfMouseDown` — AppKit's clickCount
+        // is window-scoped, so a click on a close button followed by a click
+        // on this drag zone arrives with clickCount=2. Gate the double-click
+        // titlebar action on whether the previous click was actually here.
+        private var lastSelfMouseDown: (timestamp: TimeInterval, location: NSPoint)?
 
         private static let windowDragStartDistanceSquared: CGFloat = 16
 
@@ -2476,11 +2519,14 @@ struct TabBarDragZoneView: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
+            let isOwnDoubleClick = isMouseDownOwnDoubleClick(event)
+            lastSelfMouseDown = (event.timestamp, event.locationInWindow)
 #if DEBUG
             let point = convert(event.locationInWindow, from: nil)
             dlog(
                 "tab.bar.dragZone.mouseDown isMinimal=\(isMinimalMode ? 1 : 0) " +
                 "focused=\(isFocusedPane ? 1 : 0) clickCount=\(event.clickCount) " +
+                "ownDouble=\(isOwnDoubleClick ? 1 : 0) " +
                 "point=\(point.x.rounded()),\(point.y.rounded()) " +
                 "bounds=\(bounds.width.rounded())x\(bounds.height.rounded())"
             )
@@ -2513,7 +2559,7 @@ struct TabBarDragZoneView: NSViewRepresentable {
                 return
             }
 
-            if event.clickCount >= 2 {
+            if isOwnDoubleClick {
                 clearPendingWindowDrag()
                 if onDoubleClick?() == true {
 #if DEBUG
@@ -2574,6 +2620,16 @@ struct TabBarDragZoneView: NSViewRepresentable {
         private func clearPendingWindowDrag() {
             pendingWindowDragEvent = nil
             pendingWindowDragStart = nil
+        }
+
+        private func isMouseDownOwnDoubleClick(_ event: NSEvent) -> Bool {
+            guard event.clickCount >= 2 else { return false }
+            guard let prev = lastSelfMouseDown else { return false }
+            let interval = NSEvent.doubleClickInterval
+            guard event.timestamp - prev.timestamp <= interval else { return false }
+            let dx = event.locationInWindow.x - prev.location.x
+            let dy = event.locationInWindow.y - prev.location.y
+            return hypot(dx, dy) <= 6
         }
 
         private func startWindowDrag(with event: NSEvent, in window: NSWindow) {
