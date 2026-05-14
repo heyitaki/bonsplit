@@ -2337,7 +2337,14 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
-    func testTabBarDragZoneDoubleClickRequestsNewTabInMinimalMode() throws {
+    func testTabBarDragZoneIgnoresWindowScopedDoubleClickInMinimalMode() throws {
+        // AppKit's `clickCount` is window-scoped: a click on a sibling view
+        // (e.g. a tab close button) immediately followed by a click on the
+        // drag zone arrives here with clickCount=2, even though this view
+        // never received the first click. The drag zone must not treat that
+        // as its own double-click and fire the new-tab/minimize action — the
+        // legitimate double-click path is covered by
+        // `testTabBarDragZoneSingleClickDoesNotBlockLaterDoubleClickInMinimalMode`.
         let view = TabBarDragZoneView.DragNSView(frame: NSRect(x: 0, y: 0, width: 160, height: 30))
         view.isMinimalMode = true
         view.isFocusedPane = true
@@ -2370,8 +2377,8 @@ final class BonsplitTests: XCTestCase {
         let event = try makeLeftMouseDownEvent(in: view, at: NSPoint(x: 20, y: 15), clickCount: 2)
         view.mouseDown(with: event)
 
-        XCTAssertTrue(requestedNewTab, "Minimal-mode drag zone double-click should request the new-tab action")
-        XCTAssertFalse(dragged, "Minimal-mode double-click should not start a window drag")
+        XCTAssertFalse(requestedNewTab, "A bare clickCount=2 with no prior view-routed mouseDown must not trigger the new-tab action")
+        XCTAssertFalse(dragged, "A bare clickCount=2 must not start a window drag either")
     }
 
     @MainActor
