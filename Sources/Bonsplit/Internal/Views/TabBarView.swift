@@ -1022,6 +1022,20 @@ struct TabBarView: View {
                 .animation(.easeInOut(duration: 0.14), value: shouldShowSplitButtons)
         }
         .overlay(maskedTabBarBottomSeparatorChrome)
+        .overlay {
+            TabBarDragZoneView(
+                hitRegion: .trailingEmptyChrome(
+                    tabFrames: Array(tabFramesInBar.values),
+                    reservedTrailingWidth: shouldRenderSplitButtons ? splitButtonsBackdropWidth : 0
+                ),
+                isMinimalMode: isMinimalMode,
+                isFocusedPane: isFocused,
+                onSingleClick: focusPaneFromTabBarChrome
+            ) {
+                performNewTerminalSplitButtonAction()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
         .overlay(alignment: .trailing) {
             splitButtonChrome
                 .frame(width: splitButtonsBackdropWidth, height: tabBarHeight, alignment: .trailing)
@@ -2466,6 +2480,12 @@ private struct TabBarDragAndHoverView: NSViewRepresentable {
 }
 
 struct TabBarDragZoneView: NSViewRepresentable {
+    enum HitRegion {
+        case entireBounds
+        case trailingEmptyChrome(tabFrames: [CGRect], reservedTrailingWidth: CGFloat)
+    }
+
+    var hitRegion: HitRegion = .entireBounds
     let isMinimalMode: Bool
     let isFocusedPane: Bool
     let onSingleClick: () -> Bool
@@ -2473,6 +2493,7 @@ struct TabBarDragZoneView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> DragNSView {
         let view = DragNSView()
+        view.hitRegion = hitRegion
         view.isMinimalMode = isMinimalMode
         view.isFocusedPane = isFocusedPane
         view.onSingleClick = onSingleClick
@@ -2483,6 +2504,7 @@ struct TabBarDragZoneView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: DragNSView, context: Context) {
+        nsView.hitRegion = hitRegion
         nsView.isMinimalMode = isMinimalMode
         nsView.isFocusedPane = isFocusedPane
         nsView.onSingleClick = onSingleClick
@@ -2490,6 +2512,8 @@ struct TabBarDragZoneView: NSViewRepresentable {
     }
 
     final class DragNSView: NSView {
+        var hitRegion = HitRegion.entireBounds
+        var hitTestEventTypeOverride: NSEvent.EventType?
         var isMinimalMode = false
         var isFocusedPane = false
         var onSingleClick: (() -> Bool)?
@@ -2515,7 +2539,8 @@ struct TabBarDragZoneView: NSViewRepresentable {
         override var mouseDownCanMoveWindow: Bool { false }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
-            return bounds.contains(point) ? self : nil
+            guard shouldCaptureHit(at: point) else { return nil }
+            return self
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -2536,38 +2561,36 @@ struct TabBarDragZoneView: NSViewRepresentable {
                 return
             }
 
-            // Standard (non-minimal) mode: a click in the empty trailing area
-            // should create a new tab on the very first click, not require a
-            // double-click. We dedupe subsequent clicks of the same gesture so
-            // a real double-click doesn't create two tabs back-to-back.
             if !isMinimalMode {
                 clearPendingWindowDrag()
                 if event.clickCount == 1 {
+                    if !isFocusedPane, onSingleClick?() == true {
+#if DEBUG
+                        dlog("tab.bar.dragZone.focusPane")
+#endif
+                    } else {
+#if DEBUG
+                        dlog("tab.bar.dragZone.click skipped reason=standardSingleClick clickCount=\(event.clickCount)")
+#endif
+                    }
+                    return
+                }
+                if event.clickCount >= 2 {
                     if onDoubleClick?() == true {
 #if DEBUG
-                        dlog("tab.bar.dragZone.singleClick action=newTab")
+                        dlog("tab.bar.dragZone.doubleClick action=newTab")
 #endif
                         return
                     }
-                    super.mouseDown(with: event)
-                    return
                 }
-                // clickCount >= 2: same gesture as a click we already acted on.
 #if DEBUG
-                dlog("tab.bar.dragZone.click skipped reason=dedupeStandardMode clickCount=\(event.clickCount)")
+                dlog("tab.bar.dragZone.click skipped reason=standardUnhandledClick clickCount=\(event.clickCount)")
 #endif
                 return
             }
 
             if isOwnDoubleClick {
                 clearPendingWindowDrag()
-                if onDoubleClick?() == true {
-#if DEBUG
-                    dlog("tab.bar.dragZone.doubleClick action=newTab")
-#endif
-                    return
-                }
-
 #if DEBUG
                 dlog("tab.bar.dragZone.doubleClick action=titlebar")
 #endif
@@ -2585,6 +2608,31 @@ struct TabBarDragZoneView: NSViewRepresentable {
 
             pendingWindowDragEvent = event
             pendingWindowDragStart = event.locationInWindow
+        }
+
+        private func shouldCaptureHit(at point: NSPoint) -> Bool {
+            guard bounds.contains(point) else { return false }
+            switch hitRegion {
+            case .entireBounds:
+                return true
+            case .trailingEmptyChrome(let tabFrames, let reservedTrailingWidth):
+                guard isMouseDownOrDragCandidate else { return false }
+                let trailingLimit = bounds.maxX - max(0, reservedTrailingWidth)
+                guard point.x < trailingLimit else { return false }
+                let paddedFrames = tabFrames.map { $0.insetBy(dx: -2, dy: -2) }
+                guard !paddedFrames.contains(where: { $0.contains(point) }) else { return false }
+                let startX = paddedFrames.map(\.maxX).max() ?? bounds.minX
+                return point.x >= startX
+            }
+        }
+
+        private var isMouseDownOrDragCandidate: Bool {
+            switch hitTestEventTypeOverride ?? NSApp.currentEvent?.type {
+            case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+                return true
+            default:
+                return false
+            }
         }
 
         override func mouseDragged(with event: NSEvent) {
