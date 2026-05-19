@@ -9,6 +9,12 @@ extension View {
     func tabControlShortcutHintVisibilityAnimation<Value: Equatable>(value: Value) -> some View {
         animation(TabControlShortcutHintAnimation.visibility, value: value)
     }
+
+    func tabBarButtonAnimationsDisabled() -> some View {
+        transaction { transaction in
+            transaction.animation = nil
+        }
+    }
 }
 
 private enum TabControlShortcutHintDebugSettings {
@@ -32,6 +38,12 @@ enum TabItemStyling {
 
     static func shouldShowHoverBackground(isHovered: Bool, isSelected: Bool) -> Bool {
         isHovered && !isSelected
+    }
+
+    static func tabWidthRange(for appearance: BonsplitConfiguration.Appearance) -> ClosedRange<CGFloat> {
+        let minimum = max(1, appearance.tabMinWidth)
+        let maximum = max(minimum, appearance.tabMaxWidth)
+        return minimum...maximum
     }
 
     static func resolvedFaviconImage(existing: NSImage?, incomingData: Data?) -> NSImage? {
@@ -164,10 +176,13 @@ struct TabItemView: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { hovering in
-                        isZoomHovered = hovering
+                        withTransaction(Transaction(animation: nil)) {
+                            isZoomHovered = hovering
+                        }
                     }
                     .saturation(saturation)
                     .accessibilityLabel("Exit zoom")
+                    .tabBarButtonAnimationsDisabled()
                 }
             }
 
@@ -178,8 +193,8 @@ struct TabItemView: View {
         }
         .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
         .frame(
-            minWidth: TabBarMetrics.tabMinWidth,
-            maxWidth: TabBarMetrics.tabMaxWidth,
+            minWidth: tabWidthRange.lowerBound,
+            maxWidth: tabWidthRange.upperBound,
             minHeight: tabHeight,
             maxHeight: tabHeight
         )
@@ -200,9 +215,15 @@ struct TabItemView: View {
         .onTapGesture {
             onSelect()
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                onZoomToggle()
+            }
+        )
         .onHover { hovering in
-            // Keep icon rendering stable while hovering; only accessory/background elements animate.
-            isHovered = hovering
+            withTransaction(Transaction(animation: nil)) {
+                isHovered = hovering
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(tab.title)
@@ -227,6 +248,10 @@ struct TabItemView: View {
 
     private var showsShortcutHint: Bool {
         allowsShortcutHints && (showsControlShortcutHint || alwaysShowShortcutHints) && shortcutHintLabel != nil
+    }
+
+    private var tabWidthRange: ClosedRange<CGFloat> {
+        TabItemStyling.tabWidthRange(for: appearance)
     }
 
     private var shortcutHintSlotWidth: CGFloat {
@@ -353,8 +378,10 @@ struct TabItemView: View {
     @ViewBuilder
     private var tabBackground: some View {
         ZStack(alignment: .top) {
-            // Background fill (hover)
-            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if isSelected {
+                Rectangle()
+                    .fill(TabBarColors.activeTabBackground(for: appearance))
+            } else if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {
@@ -426,14 +453,15 @@ struct TabItemView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
-                    isCloseHovered = hovering
+                    withTransaction(Transaction(animation: nil)) {
+                        isCloseHovered = hovering
+                    }
                 }
                 .saturation(saturation)
             }
         }
         .frame(width: accessorySlotSize, height: accessorySlotSize)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isHovered)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isCloseHovered)
+        .tabBarButtonAnimationsDisabled()
     }
 }
 
