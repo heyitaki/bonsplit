@@ -9,6 +9,12 @@ extension View {
     func tabControlShortcutHintVisibilityAnimation<Value: Equatable>(value: Value) -> some View {
         animation(TabControlShortcutHintAnimation.visibility, value: value)
     }
+
+    func tabBarButtonAnimationsDisabled() -> some View {
+        transaction { transaction in
+            transaction.animation = nil
+        }
+    }
 }
 
 private enum TabControlShortcutHintDebugSettings {
@@ -32,6 +38,12 @@ enum TabItemStyling {
 
     static func shouldShowHoverBackground(isHovered: Bool, isSelected: Bool) -> Bool {
         isHovered && !isSelected
+    }
+
+    static func tabWidthRange(for appearance: BonsplitConfiguration.Appearance) -> ClosedRange<CGFloat> {
+        let minimum = max(1, TabBarMetrics.tabMinWidth)
+        let maximum = max(minimum, appearance.tabMaxWidth)
+        return minimum...maximum
     }
 
     static func resolvedFaviconImage(existing: NSImage?, incomingData: Data?) -> NSImage? {
@@ -58,6 +70,7 @@ struct TabItemView: View {
     let showsControlShortcutHint: Bool
     let shortcutModifierSymbol: String
     let contextMenuState: TabContextMenuState
+    let moveDestinationsProvider: () -> [TabContextMoveDestination]
     let onSelect: () -> Void
     let onClose: () -> Void
     let onZoomToggle: () -> Void
@@ -164,10 +177,13 @@ struct TabItemView: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { hovering in
-                        isZoomHovered = hovering
+                        withTransaction(Transaction(animation: nil)) {
+                            isZoomHovered = hovering
+                        }
                     }
                     .saturation(saturation)
                     .accessibilityLabel("Exit zoom")
+                    .tabBarButtonAnimationsDisabled()
                 }
             }
 
@@ -178,14 +194,14 @@ struct TabItemView: View {
         }
         .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
         .frame(
-            minWidth: TabBarMetrics.tabMinWidth,
-            maxWidth: TabBarMetrics.tabMaxWidth,
+            minWidth: tabWidthRange.lowerBound,
+            maxWidth: tabWidthRange.upperBound,
             minHeight: tabHeight,
             maxHeight: tabHeight
         )
         .background(tabBackground.saturation(saturation))
         .tabControlShortcutHintVisibilityAnimation(value: showsShortcutHint)
-        .contentShape(Rectangle())
+        .contentShape(Rectangle().inset(by: -BonsplitTabItemHitTesting.horizontalSlop))
         // Middle click to close (macOS convention).
         // Uses an AppKit event monitor so it doesn't interfere with left click selection or drag/reorder.
         .background(MiddleClickMonitorView(onMiddleClick: {
@@ -193,16 +209,26 @@ struct TabItemView: View {
             onClose()
         }))
         .background(TabContextMenuPresenter(
-            snapshot: TabContextMenuSnapshot(tabId: tab.id, state: contextMenuState),
+            snapshot: TabContextMenuSnapshot(
+                tabId: tab.id,
+                state: contextMenuState,
+                moveDestinationsProvider: moveDestinationsProvider
+            ),
             onContextAction: onContextAction,
             onMoveDestination: onMoveDestination
         ))
         .onTapGesture {
             onSelect()
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                onZoomToggle()
+            }
+        )
         .onHover { hovering in
-            // Keep icon rendering stable while hovering; only accessory/background elements animate.
-            isHovered = hovering
+            withTransaction(Transaction(animation: nil)) {
+                isHovered = hovering
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(tab.title)
@@ -227,6 +253,10 @@ struct TabItemView: View {
 
     private var showsShortcutHint: Bool {
         allowsShortcutHints && (showsControlShortcutHint || alwaysShowShortcutHints) && shortcutHintLabel != nil
+    }
+
+    private var tabWidthRange: ClosedRange<CGFloat> {
+        TabItemStyling.tabWidthRange(for: appearance)
     }
 
     private var shortcutHintSlotWidth: CGFloat {
@@ -353,8 +383,10 @@ struct TabItemView: View {
     @ViewBuilder
     private var tabBackground: some View {
         ZStack(alignment: .top) {
-            // Background fill (hover)
-            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if isSelected {
+                Rectangle()
+                    .fill(TabBarColors.activeTabBackground(for: appearance))
+            } else if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {
@@ -426,14 +458,15 @@ struct TabItemView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
-                    isCloseHovered = hovering
+                    withTransaction(Transaction(animation: nil)) {
+                        isCloseHovered = hovering
+                    }
                 }
                 .saturation(saturation)
             }
         }
         .frame(width: accessorySlotSize, height: accessorySlotSize)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isHovered)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isCloseHovered)
+        .tabBarButtonAnimationsDisabled()
     }
 }
 
@@ -561,6 +594,7 @@ private struct MiddleClickMonitorView: NSViewRepresentable {
 struct TabContextMenuSnapshot {
     let tabId: UUID
     let state: TabContextMenuState
+    let moveDestinationsProvider: () -> [TabContextMoveDestination]
 }
 
 final class TabContextMenuActionTarget: NSObject {
@@ -635,7 +669,7 @@ enum TabContextMenuBuilder {
             to: menu
         )
 
-        menu.addItem(moveSubmenuItem(state: state, target: target))
+        menu.addItem(moveSubmenuItem(snapshot: snapshot, target: target))
 
         if state.isTerminal {
             addAction(
@@ -749,9 +783,11 @@ enum TabContextMenuBuilder {
     }
 
     private static func moveSubmenuItem(
-        state: TabContextMenuState,
+        snapshot: TabContextMenuSnapshot,
         target: TabContextMenuActionTarget
     ) -> NSMenuItem {
+        let state = snapshot.state
+        let moveDestinations = snapshot.moveDestinationsProvider()
         let item = NSMenuItem(
             title: localized("tabContext.moveTab", defaultValue: "Move Tab"),
             action: nil,
@@ -767,7 +803,7 @@ enum TabContextMenuBuilder {
             target: target,
             to: submenu
         )
-        for destination in state.moveDestinations {
+        for destination in moveDestinations {
             let destinationItem = NSMenuItem(
                 title: destination.title,
                 action: #selector(TabContextMenuActionTarget.performMoveDestination(_:)),
@@ -779,7 +815,7 @@ enum TabContextMenuBuilder {
             submenu.addItem(destinationItem)
         }
         item.submenu = submenu
-        item.isEnabled = state.canMoveToNewWorkspace || !state.moveDestinations.isEmpty
+        item.isEnabled = state.canMoveToNewWorkspace || !moveDestinations.isEmpty
         return item
     }
 
