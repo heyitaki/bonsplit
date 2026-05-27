@@ -154,6 +154,7 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
     var showSplitButtons: Bool = true
+    var tabBarVisibility: TabBarVisibility = .always
     var contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch
 
     @State private var activeDropZone: DropZone?
@@ -177,7 +178,11 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
+<<<<<<< HEAD
             if !tabBarHidden {
+=======
+            if tabBarVisibility.showsTabBar(tabCount: pane.tabs.count) {
+>>>>>>> upstream/main
                 TabBarView(
                     pane: pane,
                     isFocused: isFocused,
