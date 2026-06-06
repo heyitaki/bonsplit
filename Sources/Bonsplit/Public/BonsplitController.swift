@@ -77,9 +77,23 @@ public final class BonsplitController {
     /// Host-provided destinations for the tab context menu's Move Tab submenu.
     @ObservationIgnored public var tabContextMoveDestinationsProvider: ((TabID, PaneID) -> [TabContextMoveDestination])?
 
+    /// Host-provided synchronous check that decides whether the tab context menu should
+    /// surface a "Fork Conversation" action for the tab (e.g. an active forkable agent
+    /// session). Return `true` to enable the item, `false` (or omit the provider) to hide it.
+    @ObservationIgnored public var tabContextForkConversationAvailabilityProvider: ((TabID, PaneID) -> Bool)?
+
+    /// Host-provided default destination for the tab context menu's primary "Fork
+    /// Conversation" action. Return a destination-specific fork action; invalid values
+    /// fall back to `.forkConversationRight`.
+    @ObservationIgnored public var tabContextForkConversationDefaultActionProvider: ((TabID, PaneID) -> TabContextAction)?
+
     /// Called when the user explicitly requests to close a tab from the tab strip UI.
     /// Internal host-driven closes should not use this hook.
-    @ObservationIgnored public var onTabCloseRequest: ((_ tabId: TabID, _ paneId: PaneID) -> Void)?
+    @ObservationIgnored public var onTabCloseRequest: ((_ tabId: TabID, _ paneId: PaneID, _ source: TabCloseRequestSource) -> Void)?
+
+    /// Called when the user explicitly requests to toggle zoom from tab chrome.
+    /// When set, the host owns the full toggle and should return whether it succeeded.
+    @ObservationIgnored public var onTabZoomToggleRequest: (@MainActor (_ tabId: TabID, _ paneId: PaneID) -> Bool)?
 
     // MARK: - Internal State
 
@@ -105,6 +119,7 @@ public final class BonsplitController {
     ///   - isDirty: Whether the tab shows a dirty indicator
     ///   - showsNotificationBadge: Whether the tab shows an "unread/activity" badge
     ///   - isLoading: Whether the tab shows an activity/loading indicator (e.g. spinning icon)
+    ///   - isAudioMuted: Whether the tab shows browser audio as muted
     ///   - isPinned: Whether the tab should be treated as pinned
     ///   - pane: Optional pane to add the tab to (defaults to focused pane)
     /// - Returns: The TabID of the created tab, or nil if creation was vetoed by delegate
@@ -118,6 +133,7 @@ public final class BonsplitController {
         isDirty: Bool = false,
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
+        isAudioMuted: Bool = false,
         isPinned: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
@@ -132,6 +148,7 @@ public final class BonsplitController {
             isDirty: isDirty,
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
+            isAudioMuted: isAudioMuted,
             isPinned: isPinned
         )
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
@@ -169,6 +186,7 @@ public final class BonsplitController {
             isDirty: isDirty,
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
+            isAudioMuted: isAudioMuted,
             isPinned: isPinned
         )
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
@@ -213,6 +231,7 @@ public final class BonsplitController {
     ///   - isDirty: New dirty state (pass nil to keep current)
     ///   - showsNotificationBadge: New badge state (pass nil to keep current)
     ///   - isLoading: New loading/busy state (pass nil to keep current)
+    ///   - isAudioMuted: New browser-audio mute state (pass nil to keep current)
     ///   - isPinned: New pinned state (pass nil to keep current)
     public func updateTab(
         _ tabId: TabID,
@@ -224,6 +243,7 @@ public final class BonsplitController {
         isDirty: Bool? = nil,
         showsNotificationBadge: Bool? = nil,
         isLoading: Bool? = nil,
+        isAudioMuted: Bool? = nil,
         isPinned: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
@@ -251,6 +271,9 @@ public final class BonsplitController {
         }
         if let isLoading = isLoading {
             pane.tabs[tabIndex].isLoading = isLoading
+        }
+        if let isAudioMuted = isAudioMuted {
+            pane.tabs[tabIndex].isAudioMuted = isAudioMuted
         }
         if let isPinned = isPinned {
             pane.tabs[tabIndex].isPinned = isPinned
@@ -418,6 +441,7 @@ public final class BonsplitController {
                 isDirty: tab.isDirty,
                 showsNotificationBadge: tab.showsNotificationBadge,
                 isLoading: tab.isLoading,
+                isAudioMuted: tab.isAudioMuted,
                 isPinned: tab.isPinned
             )
         } else {
@@ -482,6 +506,7 @@ public final class BonsplitController {
             isDirty: tab.isDirty,
             showsNotificationBadge: tab.showsNotificationBadge,
             isLoading: tab.isLoading,
+            isAudioMuted: tab.isAudioMuted,
             isPinned: tab.isPinned
         )
 
@@ -645,6 +670,18 @@ public final class BonsplitController {
         let targetPaneId = paneId ?? focusedPaneId
         guard let targetPaneId else { return false }
         return internalController.togglePaneZoom(targetPaneId)
+    }
+
+    /// Request a tab-chrome zoom toggle for a specific tab.
+    /// Hosts can intercept this to run their own focus/layout reconciliation.
+    @discardableResult
+    public func requestTabZoomToggle(for tabId: TabID, inPane paneId: PaneID) -> Bool {
+        guard let (pane, _) = findTabInternal(tabId),
+              pane.id == paneId else { return false }
+        if let onTabZoomToggleRequest {
+            return onTabZoomToggleRequest(tabId, paneId)
+        }
+        return togglePaneZoom(inPane: paneId)
     }
 
     // MARK: - Context Menu Shortcut Hints
