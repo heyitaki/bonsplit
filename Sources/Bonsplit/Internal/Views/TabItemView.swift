@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 
 enum TabControlShortcutHintAnimation {
     static let visibility: Animation = .easeOut(duration: 0.12)
@@ -8,6 +9,12 @@ enum TabControlShortcutHintAnimation {
 extension View {
     func tabControlShortcutHintVisibilityAnimation<Value: Equatable>(value: Value) -> some View {
         animation(TabControlShortcutHintAnimation.visibility, value: value)
+    }
+
+    func tabBarButtonAnimationsDisabled() -> some View {
+        transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
@@ -34,6 +41,12 @@ enum TabItemStyling {
         isHovered && !isSelected
     }
 
+    static func tabWidthRange(for appearance: BonsplitConfiguration.Appearance) -> ClosedRange<CGFloat> {
+        let minimum = max(1, TabBarMetrics.tabMinWidth)
+        let maximum = max(minimum, appearance.tabMaxWidth)
+        return minimum...maximum
+    }
+
     static func resolvedFaviconImage(existing: NSImage?, incomingData: Data?) -> NSImage? {
         guard let incomingData else { return nil }
         if let decoded = NSImage(data: incomingData) {
@@ -57,9 +70,11 @@ struct TabItemView: View {
     let allowsShortcutHints: Bool
     let showsControlShortcutHint: Bool
     let shortcutModifierSymbol: String
+    let allowsClose: Bool
     let contextMenuState: TabContextMenuState
+    let moveDestinationsProvider: () -> [TabContextMoveDestination]
     let onSelect: () -> Void
-    let onClose: () -> Void
+    let onClose: (TabCloseRequestSource) -> Void
     let onZoomToggle: () -> Void
     let onContextAction: (TabContextAction) -> Void
     let onMoveDestination: (String) -> Void
@@ -80,17 +95,18 @@ struct TabItemView: View {
     var body: some View {
         HStack(spacing: 0) {
             // Icon + title block uses the standard spacing, but keep the close affordance tight.
-            HStack(spacing: TabBarMetrics.contentSpacing) {
-                let iconSlotSize = TabBarMetrics.iconSize
-                let iconTint = isSelected
-                    ? TabBarColors.activeText(for: appearance)
-                    : TabBarColors.inactiveText(for: appearance)
+            HStack(spacing: scaledContentSpacing) {
+                let iconSlotSize = scaledIconSize
+                let iconTintColor = isSelected
+                    ? TabBarColors.nsColorActiveText(for: appearance)
+                    : TabBarColors.nsColorInactiveText(for: appearance)
+                let iconTint = Color(nsColor: iconTintColor)
                 let faviconImage = renderedFaviconImage ?? tab.iconImageData.flatMap { NSImage(data: $0) }
 
                 Group {
                     if tab.isLoading {
                         // Slightly smaller than the icon slot so it reads cleaner at tab scale.
-                        TabLoadingSpinner(size: iconSlotSize * 0.86, color: iconTint)
+                        TabLoadingSpinner(size: iconSlotSize * 0.86, color: iconTintColor)
                     } else if let image = faviconImage {
                         FaviconIconView(image: image)
                             .frame(width: iconSlotSize, height: iconSlotSize, alignment: .center)
@@ -141,6 +157,19 @@ struct TabItemView: View {
                     )
                     .saturation(saturation)
 
+                if tab.isAudioMuted {
+                    Image(systemName: "speaker.slash")
+                        .font(.system(size: accessoryFontSize, weight: .semibold))
+                        .foregroundStyle(
+                            (isSelected
+                                ? TabBarColors.activeText(for: appearance)
+                                : TabBarColors.inactiveText(for: appearance))
+                                .opacity(0.78)
+                        )
+                        .saturation(saturation)
+                        .accessibilityHidden(true)
+                }
+
                 if showsZoomIndicator {
                     Button {
                         onZoomToggle()
@@ -164,10 +193,13 @@ struct TabItemView: View {
                     }
                     .buttonStyle(.plain)
                     .onHover { hovering in
-                        isZoomHovered = hovering
+                        withTransaction(Transaction(animation: nil)) {
+                            isZoomHovered = hovering
+                        }
                     }
                     .saturation(saturation)
                     .accessibilityLabel("Exit zoom")
+                    .tabBarButtonAnimationsDisabled()
                 }
             }
 
@@ -178,31 +210,41 @@ struct TabItemView: View {
         }
         .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
         .frame(
-            minWidth: TabBarMetrics.tabMinWidth,
-            maxWidth: TabBarMetrics.tabMaxWidth,
+            minWidth: tabWidthRange.lowerBound,
+            maxWidth: tabWidthRange.upperBound,
             minHeight: tabHeight,
             maxHeight: tabHeight
         )
         .background(tabBackground.saturation(saturation))
         .tabControlShortcutHintVisibilityAnimation(value: showsShortcutHint)
-        .contentShape(Rectangle())
+        .contentShape(Rectangle().inset(by: -BonsplitTabItemHitTesting.horizontalSlop))
         // Middle click to close (macOS convention).
         // Uses an AppKit event monitor so it doesn't interfere with left click selection or drag/reorder.
         .background(MiddleClickMonitorView(onMiddleClick: {
-            guard !tab.isPinned else { return }
-            onClose()
+            guard allowsClose, !tab.isPinned else { return }
+            onClose(.middleClick)
         }))
         .background(TabContextMenuPresenter(
-            snapshot: TabContextMenuSnapshot(tabId: tab.id, state: contextMenuState),
+            snapshot: TabContextMenuSnapshot(
+                tabId: tab.id,
+                state: contextMenuState,
+                moveDestinationsProvider: moveDestinationsProvider
+            ),
             onContextAction: onContextAction,
             onMoveDestination: onMoveDestination
         ))
         .onTapGesture {
             onSelect()
         }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                onZoomToggle()
+            }
+        )
         .onHover { hovering in
-            // Keep icon rendering stable while hovering; only accessory/background elements animate.
-            isHovered = hovering
+            withTransaction(Transaction(animation: nil)) {
+                isHovered = hovering
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(tab.title)
@@ -211,13 +253,37 @@ struct TabItemView: View {
         .safeHelp(tab.title)
     }
 
+    /// Scale factor of the configured tab title font relative to the default.
+    ///
+    /// Icons and close/pin affordances are multiplied by this so they grow and
+    /// shrink together with the tab title font size instead of staying pinned to
+    /// the default-size constants.
+    private var fontScale: CGFloat {
+        max(0.1, appearance.tabTitleFontSize / TabBarMetrics.titleFontSize)
+    }
+
+    /// Leading-icon slot size, scaled to the configured tab title font.
+    private var scaledIconSize: CGFloat {
+        TabBarMetrics.iconSize * fontScale
+    }
+
+    /// Close / pin glyph size, scaled to the configured tab title font.
+    private var scaledCloseIconSize: CGFloat {
+        TabBarMetrics.closeIconSize * fontScale
+    }
+
+    /// Spacing between the leading icon and the title, scaled to the font.
+    private var scaledContentSpacing: CGFloat {
+        TabBarMetrics.contentSpacing * fontScale
+    }
+
     private func glyphSize(for iconName: String) -> CGFloat {
         // `terminal.fill` reads visually heavier than most symbols at the same point size.
-        // Hardcode sizes to avoid cross-glyph layout shifts.
+        // Keep the base sizes hardcoded to avoid cross-glyph layout shifts, then scale to the font.
         if iconName == "terminal.fill" || iconName == "terminal" || iconName == "globe" {
-            return max(10, TabBarMetrics.iconSize - 2.5)
+            return max(10, TabBarMetrics.iconSize - 2.5) * fontScale
         }
-        return TabBarMetrics.iconSize
+        return scaledIconSize
     }
 
     private var shortcutHintLabel: String? {
@@ -227,6 +293,10 @@ struct TabItemView: View {
 
     private var showsShortcutHint: Bool {
         allowsShortcutHints && (showsControlShortcutHint || alwaysShowShortcutHints) && shortcutHintLabel != nil
+    }
+
+    private var tabWidthRange: ClosedRange<CGFloat> {
+        TabItemStyling.tabWidthRange(for: appearance)
     }
 
     private var shortcutHintSlotWidth: CGFloat {
@@ -344,6 +414,9 @@ struct TabItemView: View {
         if tab.isPinned { parts.append("Pinned") }
         if tab.showsNotificationBadge { parts.append("Unread") }
         if tab.isDirty { parts.append("Modified") }
+        if tab.isAudioMuted {
+            parts.append(Bundle.module.localizedString(forKey: "tabContext.audioMutedAccessibility", value: "Muted", table: nil))
+        }
         if showsZoomIndicator { parts.append("Zoomed") }
         return parts.joined(separator: ", ")
     }
@@ -353,8 +426,10 @@ struct TabItemView: View {
     @ViewBuilder
     private var tabBackground: some View {
         ZStack(alignment: .top) {
-            // Background fill (hover)
-            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if isSelected {
+                Rectangle()
+                    .fill(TabBarColors.activeTabBackground(for: appearance))
+            } else if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {
@@ -397,18 +472,18 @@ struct TabItemView: View {
             if tab.isPinned {
                 if isSelected || isHovered || isCloseHovered || (!tab.isDirty && !tab.showsNotificationBadge) {
                     Image(systemName: "pin.fill")
-                        .font(.system(size: TabBarMetrics.closeIconSize, weight: .semibold))
+                        .font(.system(size: scaledCloseIconSize, weight: .semibold))
                         .foregroundStyle(TabBarColors.inactiveText(for: appearance))
                         .frame(width: accessorySlotSize, height: accessorySlotSize)
                         .saturation(saturation)
                 }
-            } else if isSelected || isHovered || isCloseHovered {
+            } else if allowsClose && (isSelected || isHovered || isCloseHovered) {
                 // Close button (always visible on active tab, shown on hover for others)
                 Button {
-                    onClose()
+                    onClose(.closeButton)
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: TabBarMetrics.closeIconSize, weight: .semibold))
+                        .font(.system(size: scaledCloseIconSize, weight: .semibold))
                         .foregroundStyle(
                             isCloseHovered
                                 ? TabBarColors.activeText(for: appearance)
@@ -426,41 +501,181 @@ struct TabItemView: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { hovering in
-                    isCloseHovered = hovering
+                    withTransaction(Transaction(animation: nil)) {
+                        isCloseHovered = hovering
+                    }
                 }
                 .saturation(saturation)
             }
         }
         .frame(width: accessorySlotSize, height: accessorySlotSize)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isHovered)
-        .animation(.easeInOut(duration: TabBarMetrics.hoverDuration), value: isCloseHovered)
+        .tabBarButtonAnimationsDisabled()
     }
 }
 
-private struct TabLoadingSpinner: View {
+private struct TabLoadingSpinner: NSViewRepresentable {
     let size: CGFloat
-    let color: Color
+    let color: NSColor
 
-    var body: some View {
-        TimelineView(.animation) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            // 0.9s per revolution feels a bit snappier at tab-icon scale.
-            let angle = (t.truncatingRemainder(dividingBy: 0.9) / 0.9) * 360.0
+    func makeNSView(context: Context) -> TabLoadingSpinnerLayerView {
+        let view = TabLoadingSpinnerLayerView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        view.configure(size: size, color: color)
+        return view
+    }
 
-            ZStack {
-                Circle()
-                    .stroke(color.opacity(0.20), lineWidth: ringWidth)
-                Circle()
-                    .trim(from: 0.0, to: 0.28)
-                    .stroke(color, style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
-                    .rotationEffect(.degrees(angle))
-            }
-            .frame(width: size, height: size)
+    func updateNSView(_ nsView: TabLoadingSpinnerLayerView, context: Context) {
+        nsView.configure(size: size, color: color)
+    }
+}
+
+final class TabLoadingSpinnerLayerView: NSView {
+    static let rotationAnimationKey = "tabLoadingSpinnerRotation"
+    static let rotationDuration: CFTimeInterval = 0.9
+    private static let arcStrokeEnd: CGFloat = 0.28
+
+    private let trackLayer = CAShapeLayer()
+    private let arcContainerLayer = CALayer()
+    private let arcLayer = CAShapeLayer()
+    private var spinnerSize: CGFloat = 0
+    private var spinnerColor: NSColor = .labelColor
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        setupLayers()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: spinnerSize, height: spinnerSize)
+    }
+
+    func configure(size: CGFloat, color: NSColor) {
+        let resolvedSize = max(1, size)
+        let sizeChanged = abs(spinnerSize - resolvedSize) > 0.001
+        spinnerSize = resolvedSize
+        spinnerColor = color
+
+        updateColors()
+        updateGeometry()
+
+        if sizeChanged {
+            invalidateIntrinsicContentSize()
+        }
+        if window != nil {
+            startAnimating()
         }
     }
 
-    private var ringWidth: CGFloat {
-        max(1.6, size * 0.14)
+    override func layout() {
+        super.layout()
+        updateGeometry()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAnimating()
+        } else {
+            startAnimating()
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors()
+    }
+
+    private func setupLayers() {
+        guard let layer else { return }
+        layer.masksToBounds = false
+
+        trackLayer.fillColor = nil
+        arcLayer.fillColor = nil
+        arcLayer.strokeStart = 0
+        arcLayer.strokeEnd = Self.arcStrokeEnd
+        arcLayer.lineCap = .round
+
+        arcContainerLayer.addSublayer(arcLayer)
+        layer.addSublayer(trackLayer)
+        layer.addSublayer(arcContainerLayer)
+    }
+
+    private func updateGeometry() {
+        let diameter = max(1, min(spinnerSize, bounds.width, bounds.height))
+        let frame = CGRect(
+            x: (bounds.width - diameter) * 0.5,
+            y: (bounds.height - diameter) * 0.5,
+            width: diameter,
+            height: diameter
+        )
+        let lineWidth = max(1.6, spinnerSize * 0.14)
+        let pathRect = CGRect(origin: .zero, size: frame.size).insetBy(dx: lineWidth * 0.5, dy: lineWidth * 0.5)
+        let path = CGPath(ellipseIn: pathRect, transform: nil)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trackLayer.frame = frame
+        trackLayer.lineWidth = lineWidth
+        trackLayer.path = path
+        arcContainerLayer.frame = frame
+        arcLayer.frame = CGRect(origin: .zero, size: frame.size)
+        arcLayer.lineWidth = lineWidth
+        arcLayer.path = path
+        CATransaction.commit()
+    }
+
+    private func updateColors() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trackLayer.strokeColor = resolvedCGColor(spinnerColor, alphaMultiplier: 0.20)
+        arcLayer.strokeColor = resolvedCGColor(spinnerColor, alphaMultiplier: 1.0)
+        CATransaction.commit()
+    }
+
+    private func resolvedCGColor(_ color: NSColor, alphaMultiplier: CGFloat) -> CGColor {
+        var resolved = color
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(NSColorSpace.sRGB) ?? color
+        }
+        let alpha = resolved.alphaComponent * alphaMultiplier
+        return resolved.withAlphaComponent(alpha).cgColor
+    }
+
+    private func startAnimating() {
+        guard arcContainerLayer.animation(forKey: Self.rotationAnimationKey) == nil else { return }
+        let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+        animation.fromValue = 0
+        animation.toValue = CGFloat.pi * 2
+        animation.duration = Self.rotationDuration
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        arcContainerLayer.add(animation, forKey: Self.rotationAnimationKey)
+    }
+
+    private func stopAnimating() {
+        arcContainerLayer.removeAnimation(forKey: Self.rotationAnimationKey)
+    }
+
+    var activeRotationAnimationForTesting: CAAnimation? {
+        arcContainerLayer.animation(forKey: Self.rotationAnimationKey)
+    }
+
+    var arcStrokeEndForTesting: CGFloat {
+        arcLayer.strokeEnd
+    }
+
+    var ringWidthForTesting: CGFloat {
+        arcLayer.lineWidth
+    }
+
+    var arcStrokeColorForTesting: CGColor? {
+        arcLayer.strokeColor
     }
 }
 
@@ -561,6 +776,7 @@ private struct MiddleClickMonitorView: NSViewRepresentable {
 struct TabContextMenuSnapshot {
     let tabId: UUID
     let state: TabContextMenuState
+    let moveDestinationsProvider: () -> [TabContextMoveDestination]
 }
 
 final class TabContextMenuActionTarget: NSObject {
@@ -635,7 +851,7 @@ enum TabContextMenuBuilder {
             to: menu
         )
 
-        menu.addItem(moveSubmenuItem(state: state, target: target))
+        menu.addItem(moveSubmenuItem(snapshot: snapshot, target: target))
 
         if state.isTerminal {
             addAction(
@@ -654,6 +870,18 @@ enum TabContextMenuBuilder {
                 target: target,
                 to: menu
             )
+        }
+
+        if state.canForkConversation {
+            menu.addItem(.separator())
+            addAction(
+                title: localized("tabContext.forkConversation", defaultValue: "Fork Conversation"),
+                action: .forkConversation,
+                state: state,
+                target: target,
+                to: menu
+            )
+            menu.addItem(forkConversationSubmenuItem(state: state, target: target))
         }
 
         menu.addItem(.separator())
@@ -675,6 +903,15 @@ enum TabContextMenuBuilder {
 
         if state.isBrowser {
             menu.addItem(.separator())
+            addAction(
+                title: state.isAudioMuted
+                    ? localized("tabContext.unmuteTab", defaultValue: "Unmute Tab")
+                    : localized("tabContext.muteTab", defaultValue: "Mute Tab"),
+                action: .toggleAudioMute,
+                state: state,
+                target: target,
+                to: menu
+            )
             addAction(
                 title: localized("tabContext.reloadTab", defaultValue: "Reload Tab"),
                 action: .reload,
@@ -749,9 +986,11 @@ enum TabContextMenuBuilder {
     }
 
     private static func moveSubmenuItem(
-        state: TabContextMenuState,
+        snapshot: TabContextMenuSnapshot,
         target: TabContextMenuActionTarget
     ) -> NSMenuItem {
+        let state = snapshot.state
+        let moveDestinations = snapshot.moveDestinationsProvider()
         let item = NSMenuItem(
             title: localized("tabContext.moveTab", defaultValue: "Move Tab"),
             action: nil,
@@ -767,7 +1006,7 @@ enum TabContextMenuBuilder {
             target: target,
             to: submenu
         )
-        for destination in state.moveDestinations {
+        for destination in moveDestinations {
             let destinationItem = NSMenuItem(
                 title: destination.title,
                 action: #selector(TabContextMenuActionTarget.performMoveDestination(_:)),
@@ -779,7 +1018,77 @@ enum TabContextMenuBuilder {
             submenu.addItem(destinationItem)
         }
         item.submenu = submenu
-        item.isEnabled = state.canMoveToNewWorkspace || !state.moveDestinations.isEmpty
+        item.isEnabled = state.canMoveToNewWorkspace || !moveDestinations.isEmpty
+        return item
+    }
+
+    private static func forkConversationSubmenuItem(
+        state: TabContextMenuState,
+        target: TabContextMenuActionTarget
+    ) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: localized("tabContext.forkConversationTo", defaultValue: "Fork Conversation To"),
+            action: nil,
+            keyEquivalent: ""
+        )
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        let defaultAction = state.forkConversationDefaultAction.isForkConversationDestination
+            ? state.forkConversationDefaultAction
+            : .defaultForkConversationDestination
+
+        addAction(
+            title: localized("tabContext.forkConversation.right", defaultValue: "Right Split"),
+            action: .forkConversationRight,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationRight ? .on : .off
+        )
+        addAction(
+            title: localized("tabContext.forkConversation.left", defaultValue: "Left Split"),
+            action: .forkConversationLeft,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationLeft ? .on : .off
+        )
+        addAction(
+            title: localized("tabContext.forkConversation.top", defaultValue: "Top Split"),
+            action: .forkConversationTop,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationTop ? .on : .off
+        )
+        addAction(
+            title: localized("tabContext.forkConversation.bottom", defaultValue: "Bottom Split"),
+            action: .forkConversationBottom,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationBottom ? .on : .off
+        )
+        submenu.addItem(.separator())
+        addAction(
+            title: localized("tabContext.forkConversation.newTab", defaultValue: "New Tab"),
+            action: .forkConversationNewTab,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationNewTab ? .on : .off
+        )
+        addAction(
+            title: localized("tabContext.forkConversation.newWorkspace", defaultValue: "New Workspace"),
+            action: .forkConversationNewWorkspace,
+            state: state,
+            target: target,
+            to: submenu,
+            stateValue: defaultAction == .forkConversationNewWorkspace ? .on : .off
+        )
+
+        item.submenu = submenu
+        item.isEnabled = true
         return item
     }
 
@@ -790,7 +1099,8 @@ enum TabContextMenuBuilder {
         enabled: Bool = true,
         state: TabContextMenuState,
         target: TabContextMenuActionTarget,
-        to menu: NSMenu
+        to menu: NSMenu,
+        stateValue: NSControl.StateValue = .off
     ) -> NSMenuItem {
         let item = NSMenuItem(
             title: title,
@@ -800,6 +1110,7 @@ enum TabContextMenuBuilder {
         item.target = target
         item.representedObject = action.rawValue
         item.isEnabled = enabled
+        item.state = stateValue
         if let shortcut = state.shortcuts[action] {
             applyShortcut(shortcut, to: item)
         }

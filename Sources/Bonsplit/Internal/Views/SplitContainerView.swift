@@ -6,8 +6,36 @@ private var splitContainerProgrammaticSyncDepth = 0
 private class ThemedSplitView: NSSplitView {
     var customDividerColor: NSColor?
 
+    /// Host-configured divider thickness in points. When `nil` the split view
+    /// uses AppKit's default thickness for its `dividerStyle`.
+    var customDividerThickness: CGFloat? {
+        didSet {
+            guard oldValue != customDividerThickness else { return }
+            // Thickness participates in pane layout, so re-run AppKit's divider
+            // bookkeeping and repaint when the host changes it on config reload.
+            needsLayout = true
+            needsDisplay = true
+        }
+    }
+
     override var dividerColor: NSColor {
         customDividerColor ?? super.dividerColor
+    }
+
+    override var dividerThickness: CGFloat {
+        customDividerThickness ?? super.dividerThickness
+    }
+
+    // Paint the full reserved divider rect with the resolved color so a
+    // thicker-than-hairline divider renders as a solid bar. AppKit's `.thin`
+    // style otherwise draws a 1pt line regardless of the reserved thickness.
+    override func drawDivider(in rect: NSRect) {
+        guard let customDividerColor else {
+            super.drawDivider(in: rect)
+            return
+        }
+        customDividerColor.setFill()
+        rect.fill()
     }
 
     override var isOpaque: Bool { false }
@@ -94,6 +122,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
     var showSplitButtons: Bool = true
+    var tabBarVisibility: TabBarVisibility = .always
     var contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch
     /// Callback when geometry changes. Bool indicates if change is during active divider drag.
     var onGeometryChange: ((_ isDragging: Bool) -> Void)?
@@ -121,6 +150,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
         let splitView = ThemedSplitView()
 #endif
         splitView.customDividerColor = TabBarColors.nsColorSeparator(for: appearance)
+        splitView.customDividerThickness = TabBarMetrics.resolvedDividerThickness(appearance.dividerThickness)
         splitView.isVertical = splitState.orientation == .horizontal
         splitView.dividerStyle = .thin
         splitView.delegate = context.coordinator
@@ -240,8 +270,9 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
             context.coordinator.initialDividerApplyAttempts = 0
 
             if animationOrigin != nil {
-                let targetPosition = availableSize * 0.5
-                splitState.dividerPosition = 0.5
+                let targetDividerPosition = min(max(splitState.dividerPosition, 0.1), 0.9)
+                let targetPosition = availableSize * targetDividerPosition
+                splitState.dividerPosition = targetDividerPosition
 
                 if shouldAnimate {
                     // Position at edge while new pane is hidden
@@ -268,9 +299,9 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                             duration: duration
                         ) {
                             context.coordinator.isAnimating = false
-                            // Re-assert exact 0.5 ratio to prevent pixel-rounding drift
-                            splitState.dividerPosition = 0.5
-                            context.coordinator.lastAppliedPosition = 0.5
+                            // Re-assert the target ratio to prevent pixel-rounding drift.
+                            splitState.dividerPosition = targetDividerPosition
+                            context.coordinator.lastAppliedPosition = targetDividerPosition
 #if DEBUG
                             dlog(
                                 "split.entry.complete split=\(splitDebugToken) orientation=\(orientationToken) " +
@@ -282,6 +313,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                 } else {
                     // No animation - just set the position immediately
                     context.coordinator.setPositionSafely(targetPosition, in: splitView, layout: false)
+                    context.coordinator.lastAppliedPosition = targetDividerPosition
 #if DEBUG
                     dlog(
                         "split.entry.noAnimation split=\(splitDebugToken) orientation=\(orientationToken) " +
@@ -324,6 +356,9 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
         splitView.layer?.backgroundColor = NSColor.clear.cgColor
         splitView.layer?.isOpaque = false
         (splitView as? ThemedSplitView)?.customDividerColor = TabBarColors.nsColorSeparator(for: appearance)
+        let resolvedThickness = TabBarMetrics.resolvedDividerThickness(appearance.dividerThickness)
+        let dividerThicknessChanged = (splitView as? ThemedSplitView)?.customDividerThickness != resolvedThickness
+        (splitView as? ThemedSplitView)?.customDividerThickness = resolvedThickness
 
         // Update orientation if changed
         splitView.isVertical = splitState.orientation == .horizontal
@@ -367,6 +402,18 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
         // Then sync if the position changed externally
         let currentPosition = splitState.dividerPosition
         context.coordinator.syncPosition(currentPosition, in: splitView)
+
+        // A pure divider-thickness change doesn't move the model divider
+        // position, so `syncPosition` early-returns and AppKit keeps the cached
+        // pane frames — leaving the painted divider at its old width. Force a
+        // re-divide so the new thickness changes the gap. Deferred to the next
+        // runloop turn (mirroring `applyInitialDividerPosition`) so it runs
+        // after this layout pass settles real, non-zero bounds.
+        if dividerThicknessChanged {
+            DispatchQueue.main.async {
+                context.coordinator.reapplyDividerForThicknessChange(in: splitView)
+            }
+        }
     }
 
     // MARK: - Helpers
@@ -442,6 +489,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,
                 showSplitButtons: showSplitButtons,
+                tabBarVisibility: tabBarVisibility,
                 contentViewLifecycle: contentViewLifecycle
             )
         case .split(let nestedSplitState):
@@ -452,6 +500,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,
                 showSplitButtons: showSplitButtons,
+                tabBarVisibility: tabBarVisibility,
                 contentViewLifecycle: contentViewLifecycle,
                 onGeometryChange: onGeometryChange,
                 enableAnimations: enableAnimations,
@@ -620,6 +669,23 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
             if layout {
                 splitView.layoutSubtreeIfNeeded()
             }
+        }
+
+        /// Re-divide the split using the model's current fractional position so a
+        /// runtime change to `dividerThickness` takes effect immediately.
+        ///
+        /// `setPosition(_:ofDividerAt:)` recomputes both arranged-subview frames
+        /// against the split view's current `dividerThickness`; recomputing from
+        /// the stored fraction preserves the user's split ratio while widening
+        /// (or narrowing) the gap to match the new thickness.
+        func reapplyDividerForThicknessChange(in splitView: NSSplitView) {
+            guard splitView.arrangedSubviews.count >= 2 else { return }
+            let available = splitAvailableSize(in: splitView)
+            guard available > 0 else { return }
+            let bounds = normalizedDividerBounds(in: splitView)
+            let normalized = max(bounds.lowerBound, min(bounds.upperBound, splitState.dividerPosition))
+            setPositionSafely(available * normalized, in: splitView, layout: true)
+            lastAppliedPosition = normalized
         }
 
         func syncPosition(_ statePosition: CGFloat, in splitView: NSSplitView) {
