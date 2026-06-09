@@ -24,6 +24,31 @@ public enum NewTabPosition: Sendable {
     case end
 }
 
+/// Controls when pane tab bars are shown.
+public enum TabBarVisibility: Sendable, Equatable {
+    /// Always show the pane tab bar, even when the pane has zero or one tab.
+    case always
+
+    /// Show the pane tab bar only when there are multiple tabs to switch between.
+    case multipleTabs
+
+    /// Never render the pane tab bar. Splits and tabs continue to function;
+    /// the host app is responsible for surfacing tab/split actions
+    /// (e.g. via context menu, command palette, or keyboard).
+    case never
+
+    public func showsTabBar(tabCount: Int) -> Bool {
+        switch self {
+        case .always:
+            return true
+        case .multipleTabs:
+            return tabCount >= 2
+        case .never:
+            return false
+        }
+    }
+}
+
 /// Configuration for the split tab bar appearance and behavior
 public struct BonsplitConfiguration: Sendable {
 
@@ -59,6 +84,9 @@ public struct BonsplitConfiguration: Sendable {
     /// Controls where new tabs are inserted in the tab list
     public var newTabPosition: NewTabPosition
 
+    /// Controls when pane tab bars are shown
+    public var tabBarVisibility: TabBarVisibility
+
     // MARK: - Appearance
 
     /// Tab bar appearance customization
@@ -92,6 +120,7 @@ public struct BonsplitConfiguration: Sendable {
         allowsClickToCreateNewTab: Bool = true,
         contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch,
         newTabPosition: NewTabPosition = .current,
+        tabBarVisibility: TabBarVisibility = .always,
         appearance: Appearance = .default
     ) {
         self.allowSplits = allowSplits
@@ -103,6 +132,7 @@ public struct BonsplitConfiguration: Sendable {
         self.allowsClickToCreateNewTab = allowsClickToCreateNewTab
         self.contentViewLifecycle = contentViewLifecycle
         self.newTabPosition = newTabPosition
+        self.tabBarVisibility = tabBarVisibility
         self.appearance = appearance
     }
 }
@@ -436,23 +466,6 @@ extension BonsplitConfiguration {
 
         // MARK: - Tab Bar
 
-        /// Controls whether the per-pane tab bar is rendered.
-        public enum TabBarVisibility: Int, Sendable, CaseIterable {
-            /// Always show the tab bar.
-            case always = 0
-            /// Never render the tab bar. Splits and tabs continue to function;
-            /// the host app is responsible for surfacing tab/split actions
-            /// (e.g. via context menu, command palette, or keyboard).
-            case never = 1
-            /// Render the tab bar only when the pane has more than one tab.
-            /// Single-tab panes hide the bar to keep the chrome minimal; the
-            /// bar appears automatically once a second tab is added.
-            case auto = 2
-        }
-
-        /// Whether the tab bar is rendered. Defaults to `.always`.
-        public var tabBarVisibility: TabBarVisibility
-
         /// Height of the tab bar
         public var tabBarHeight: CGFloat
 
@@ -554,7 +567,6 @@ extension BonsplitConfiguration {
         // MARK: - Initializer
 
         public init(
-            tabBarVisibility: TabBarVisibility = .always,
             tabBarHeight: CGFloat = 30,
             tabMinWidth: CGFloat = 140,
             tabMaxWidth: CGFloat = 220,
@@ -576,7 +588,6 @@ extension BonsplitConfiguration {
             chromeColors: ChromeColors = .init(),
             usesSharedBackdrop: Bool = false
         ) {
-            self.tabBarVisibility = tabBarVisibility
             self.tabBarHeight = tabBarHeight
             self.tabMinWidth = tabMinWidth
             self.tabMaxWidth = tabMaxWidth
