@@ -24,6 +24,24 @@ public enum NewTabPosition: Sendable {
     case end
 }
 
+/// Controls when pane tab bars are shown.
+public enum TabBarVisibility: Sendable, Equatable {
+    /// Always show the pane tab bar, even when the pane has zero or one tab.
+    case always
+
+    /// Show the pane tab bar only when there are multiple tabs to switch between.
+    case multipleTabs
+
+    public func showsTabBar(tabCount: Int) -> Bool {
+        switch self {
+        case .always:
+            return true
+        case .multipleTabs:
+            return tabCount >= 2
+        }
+    }
+}
+
 /// Configuration for the split tab bar appearance and behavior
 public struct BonsplitConfiguration: Sendable {
 
@@ -59,6 +77,9 @@ public struct BonsplitConfiguration: Sendable {
     /// Controls where new tabs are inserted in the tab list
     public var newTabPosition: NewTabPosition
 
+    /// Controls when pane tab bars are shown
+    public var tabBarVisibility: TabBarVisibility
+
     // MARK: - Appearance
 
     /// Tab bar appearance customization
@@ -92,6 +113,7 @@ public struct BonsplitConfiguration: Sendable {
         allowsClickToCreateNewTab: Bool = true,
         contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch,
         newTabPosition: NewTabPosition = .current,
+        tabBarVisibility: TabBarVisibility = .always,
         appearance: Appearance = .default
     ) {
         self.allowSplits = allowSplits
@@ -103,6 +125,7 @@ public struct BonsplitConfiguration: Sendable {
         self.allowsClickToCreateNewTab = allowsClickToCreateNewTab
         self.contentViewLifecycle = contentViewLifecycle
         self.newTabPosition = newTabPosition
+        self.tabBarVisibility = tabBarVisibility
         self.appearance = appearance
     }
 }
@@ -478,6 +501,13 @@ extension BonsplitConfiguration {
         /// Minimum height of a pane
         public var minimumPaneHeight: CGFloat
 
+        /// Thickness, in points, of the divider drawn between split panes.
+        ///
+        /// Defaults to `1` to match the historical hairline divider. Hosts can
+        /// raise this to make the separator between adjacent panes easier to see.
+        /// Values are clamped to a sane range when applied to the split view.
+        public var dividerThickness: CGFloat
+
         /// Whether to show split buttons in the tab bar
         public var showSplitButtons: Bool
 
@@ -562,6 +592,7 @@ extension BonsplitConfiguration {
             tabSpacing: CGFloat = 0,
             minimumPaneWidth: CGFloat = 100,
             minimumPaneHeight: CGFloat = 100,
+            dividerThickness: CGFloat = 1,
             showSplitButtons: Bool = true,
             splitButtons: [SplitActionButton] = SplitActionButton.defaults,
             splitButtonsOnHover: Bool = false,
@@ -584,6 +615,7 @@ extension BonsplitConfiguration {
             self.tabSpacing = tabSpacing
             self.minimumPaneWidth = minimumPaneWidth
             self.minimumPaneHeight = minimumPaneHeight
+            self.dividerThickness = dividerThickness
             self.showSplitButtons = showSplitButtons
             self.splitButtons = Self.uniqueSplitButtons(splitButtons)
             self.splitButtonsOnHover = splitButtonsOnHover
