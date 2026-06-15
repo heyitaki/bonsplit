@@ -287,6 +287,15 @@ extension BonsplitConfiguration {
         public var icon: Icon
         public var tooltip: String?
         public var action: Action
+        public var activatesOnMouseDown: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case icon
+            case tooltip
+            case action
+            case activatesOnMouseDown
+        }
 
         public var systemImage: String {
             if case .systemImage(let name) = icon {
@@ -299,13 +308,15 @@ extension BonsplitConfiguration {
             id: String,
             systemImage: String,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false
         ) {
             self.init(
                 id: id,
                 icon: .systemImage(systemImage),
                 tooltip: tooltip,
-                action: action
+                action: action,
+                activatesOnMouseDown: activatesOnMouseDown
             )
         }
 
@@ -313,12 +324,34 @@ extension BonsplitConfiguration {
             id: String,
             icon: Icon,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false
         ) {
             self.id = id
             self.icon = icon
             self.tooltip = tooltip
             self.action = action
+            self.activatesOnMouseDown = activatesOnMouseDown
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            icon = try container.decode(Icon.self, forKey: .icon)
+            tooltip = try container.decodeIfPresent(String.self, forKey: .tooltip)
+            action = try container.decode(Action.self, forKey: .action)
+            activatesOnMouseDown = try container.decodeIfPresent(Bool.self, forKey: .activatesOnMouseDown) ?? false
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(icon, forKey: .icon)
+            try container.encodeIfPresent(tooltip, forKey: .tooltip)
+            try container.encode(action, forKey: .action)
+            if activatesOnMouseDown {
+                try container.encode(activatesOnMouseDown, forKey: .activatesOnMouseDown)
+            }
         }
 
         public static let newTerminal = SplitActionButton(
@@ -491,6 +524,13 @@ extension BonsplitConfiguration {
         /// Minimum height of a pane
         public var minimumPaneHeight: CGFloat
 
+        /// Thickness, in points, of the divider drawn between split panes.
+        ///
+        /// Defaults to `1` to match the historical hairline divider. Hosts can
+        /// raise this to make the separator between adjacent panes easier to see.
+        /// Values are clamped to a sane range when applied to the split view.
+        public var dividerThickness: CGFloat
+
         /// Whether to show split buttons in the tab bar
         public var showSplitButtons: Bool
 
@@ -574,6 +614,7 @@ extension BonsplitConfiguration {
             tabSpacing: CGFloat = 0,
             minimumPaneWidth: CGFloat = 100,
             minimumPaneHeight: CGFloat = 100,
+            dividerThickness: CGFloat = 1,
             showSplitButtons: Bool = true,
             splitButtons: [SplitActionButton] = SplitActionButton.defaults,
             splitButtonsOnHover: Bool = false,
@@ -595,6 +636,7 @@ extension BonsplitConfiguration {
             self.tabSpacing = tabSpacing
             self.minimumPaneWidth = minimumPaneWidth
             self.minimumPaneHeight = minimumPaneHeight
+            self.dividerThickness = dividerThickness
             self.showSplitButtons = showSplitButtons
             self.splitButtons = Self.uniqueSplitButtons(splitButtons)
             self.splitButtonsOnHover = splitButtonsOnHover
