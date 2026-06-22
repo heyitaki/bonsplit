@@ -16,6 +16,21 @@ extension View {
             transaction.animation = nil
         }
     }
+
+    /// Imposes a minimum width on the tab row only when `minWidth` is non-nil.
+    ///
+    /// Used by the tab strip's fill mode to force the horizontal `ScrollView` to hand
+    /// the row the full viewport width so SwiftUI can distribute slack across flexible
+    /// tabs. Passing `nil` returns the view untouched, preserving the fixed-width layout
+    /// byte-for-byte.
+    @ViewBuilder
+    func tabRowFillMinWidth(_ minWidth: CGFloat?) -> some View {
+        if let minWidth {
+            frame(minWidth: minWidth, alignment: .leading)
+        } else {
+            self
+        }
+    }
 }
 
 private enum TabControlShortcutHintDebugSettings {
@@ -64,6 +79,9 @@ struct TabItemView: View {
     let isSelected: Bool
     let showsZoomIndicator: Bool
     let appearance: BonsplitConfiguration.Appearance
+    /// When true, the tab drops its fixed maximum width and grows to fill the slack
+    /// the enclosing tab strip distributes (see ``BonsplitConfiguration/Appearance/tabWidthMode``).
+    let fillsWidth: Bool
     let saturation: Double
     let trailingSeparatorBottomInset: CGFloat
     let controlShortcutDigit: Int?
@@ -82,6 +100,7 @@ struct TabItemView: View {
     @State private var isHovered = false
     @State private var isCloseHovered = false
     @State private var isZoomHovered = false
+    @State private var isAudioHovered = false
     @State private var showGlobeFallback = true
     @State private var globeFallbackWorkItem: DispatchWorkItem?
     @State private var lastIsLoadingObserved = false
@@ -157,17 +176,53 @@ struct TabItemView: View {
                     )
                     .saturation(saturation)
 
-                if tab.isAudioMuted {
-                    Image(systemName: "speaker.slash")
-                        .font(.system(size: accessoryFontSize, weight: .semibold))
-                        .foregroundStyle(
-                            (isSelected
-                                ? TabBarColors.activeText(for: appearance)
-                                : TabBarColors.inactiveText(for: appearance))
-                                .opacity(0.78)
-                        )
-                        .saturation(saturation)
-                        .accessibilityHidden(true)
+                // Chrome/Safari-style audio affordance: a speaker glyph appears
+                // when the tab is producing audible audio (click to mute) or has
+                // been muted (click to unmute). Reuses the existing
+                // `.toggleAudioMute` context action so the host owns the mute
+                // route. Hidden when the tab is neither playing nor muted.
+                if tab.isAudioMuted || tab.isAudioPlaying {
+                    let isMuted = tab.isAudioMuted
+                    let audioLabel = Bundle.module.localizedString(
+                        forKey: isMuted ? "tabContext.unmuteTab" : "tabContext.muteTab",
+                        value: isMuted ? "Unmute Tab" : "Mute Tab",
+                        table: nil
+                    )
+                    Button {
+                        onContextAction(.toggleAudioMute)
+                    } label: {
+                        Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: accessoryFontSize, weight: .semibold))
+                            .foregroundStyle(
+                                isAudioHovered
+                                    ? (isSelected
+                                        ? TabBarColors.activeText(for: appearance)
+                                        : TabBarColors.inactiveText(for: appearance))
+                                    : (isSelected
+                                        ? TabBarColors.activeText(for: appearance)
+                                        : TabBarColors.inactiveText(for: appearance))
+                                        .opacity(0.78)
+                            )
+                            .frame(width: accessorySlotSize, height: accessorySlotSize)
+                            .background(
+                                Circle()
+                                    .fill(
+                                        isAudioHovered
+                                            ? TabBarColors.hoveredTabBackground(for: appearance)
+                                            : .clear
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withTransaction(Transaction(animation: nil)) {
+                            isAudioHovered = hovering
+                        }
+                    }
+                    .saturation(saturation)
+                    .safeHelp(audioLabel)
+                    .accessibilityLabel(audioLabel)
+                    .tabBarButtonAnimationsDisabled()
                 }
 
                 if showsZoomIndicator {
@@ -211,7 +266,9 @@ struct TabItemView: View {
         .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
         .frame(
             minWidth: tabWidthRange.lowerBound,
-            maxWidth: tabWidthRange.upperBound,
+            // In fill mode the tab becomes flexible so the tab strip can distribute
+            // slack equally across tabs; the fixed upper bound only applies otherwise.
+            maxWidth: fillsWidth ? .infinity : tabWidthRange.upperBound,
             minHeight: tabHeight,
             maxHeight: tabHeight
         )

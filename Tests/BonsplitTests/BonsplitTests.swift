@@ -179,6 +179,38 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
+    func testTabAudioPlayingRoundTrips() {
+        let controller = BonsplitController()
+        let tabId = controller.createTab(title: "Audio", icon: "globe", isAudioPlaying: true)!
+
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+
+        // A nil update leaves the flag untouched; an explicit false clears it.
+        controller.updateTab(tabId, title: "Audio 2")
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+
+        controller.updateTab(tabId, isAudioPlaying: false)
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, false)
+
+        controller.updateTab(tabId, isAudioPlaying: true)
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+    }
+
+    @MainActor
+    func testSplitPaneWithTabPreservesAudioPlaying() {
+        let controller = BonsplitController()
+        _ = controller.createTab(title: "Base", icon: "doc")
+        let playing = Bonsplit.Tab(title: "Playing", isAudioPlaying: true)
+
+        let newPane = controller.splitPane(orientation: .horizontal, withTab: playing)
+
+        XCTAssertNotNil(newPane)
+        // The supplied tab's audio-playing state must survive the public
+        // Tab -> internal TabItem conversion in the split path.
+        XCTAssertEqual(controller.tab(playing.id)?.isAudioPlaying, true)
+    }
+
+    @MainActor
     func testTabClose() {
         let controller = BonsplitController()
         let tabId = controller.createTab(title: "Test Tab", icon: "doc")!
@@ -271,6 +303,36 @@ final class BonsplitTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
 
         XCTAssertEqual(decoded, button)
+    }
+
+    func testCustomSplitActionButtonCanActivateOnMouseDown() throws {
+        let button = BonsplitConfiguration.SplitActionButton(
+            id: "tools",
+            systemImage: "ellipsis.vertical",
+            tooltip: "Tools",
+            action: .custom("tools"),
+            activatesOnMouseDown: true
+        )
+
+        let data = try JSONEncoder().encode(button)
+        let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
+
+        XCTAssertEqual(decoded, button)
+        XCTAssertTrue(decoded.activatesOnMouseDown)
+    }
+
+    func testSplitActionButtonDecodesMissingMouseDownActivationAsFalse() throws {
+        let data = #"""
+        {
+          "id": "terminal",
+          "icon": { "type": "systemImage", "name": "terminal" },
+          "action": "newTerminal"
+        }
+        """#.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
+
+        XCTAssertFalse(decoded.activatesOnMouseDown)
     }
 
     func testCustomSplitActionButtonPreservesReservedActionName() throws {
@@ -373,6 +435,24 @@ final class BonsplitTests: XCTestCase {
         XCTAssertTrue(first === second)
     }
 
+    func testSplitActionSystemImageKeepsSupportedSymbols() {
+        let image = TabBarStyling.splitActionSystemImage(for: "terminal")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "terminal", rotationDegrees: 0, pointSize: 12))
+    }
+
+    func testSplitActionSystemImageRendersVerticalEllipsisFallback() {
+        let image = TabBarStyling.splitActionSystemImage(for: "ellipsis.vertical")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "ellipsis", rotationDegrees: 90, pointSize: 10.5))
+    }
+
+    func testSplitActionSystemImageUsesFallbackForUnknownSymbols() {
+        let image = TabBarStyling.splitActionSystemImage(for: "cmux.definitely.missing.symbol")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "questionmark.circle", rotationDegrees: 0, pointSize: 12))
+    }
+
     func testMinimalModeDoesNotReserveHiddenSplitButtonStrip() {
         XCTAssertEqual(
             TabBarStyling.trailingTabContentInset(showSplitButtons: true, isMinimalMode: true),
@@ -435,7 +515,7 @@ final class BonsplitTests: XCTestCase {
         XCTAssertEqual(layout.trailingTabContentInset, 160)
     }
 
-    func testTabBarLayoutCapsSplitButtonLaneToQuarterOfAvailableWidth() {
+    func testTabBarLayoutKeepsFiveActionButtonsVisibleBeforeClipping() {
         let layout = TabBarLayout(
             tabBarHeight: 28,
             availableWidth: 240,
@@ -444,11 +524,12 @@ final class BonsplitTests: XCTestCase {
             reservesSplitButtonLane: true,
             measuredSplitButtonLaneWidth: 400
         )
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
 
         XCTAssertEqual(layout.fullSplitButtonLaneWidth, 400)
-        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.trailingTabContentInset, 60)
+        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.trailingTabContentInset, minimumVisibleWidth)
         XCTAssertTrue(layout.splitButtonLaneOverflowsViewport)
     }
 
@@ -463,9 +544,10 @@ final class BonsplitTests: XCTestCase {
             measuredSplitButtonLaneWidth: 400
         )
 
-        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.trailingTabContentInset, 60)
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
+        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.trailingTabContentInset, minimumVisibleWidth)
     }
 
     func testTabBarLayoutUsesTrailingWhitespaceBeforeClippingSplitButtons() {
@@ -523,9 +605,10 @@ final class BonsplitTests: XCTestCase {
             masksTabContent: true
         )
 
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60, accuracy: 0.0001)
-        XCTAssertEqual(geometry.backgroundSolidWidth, 60, accuracy: 0.0001)
-        XCTAssertEqual(geometry.contentOcclusionWidth, 60, accuracy: 0.0001)
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth, accuracy: 0.0001)
+        XCTAssertEqual(geometry.backgroundSolidWidth, minimumVisibleWidth, accuracy: 0.0001)
+        XCTAssertEqual(geometry.contentOcclusionWidth, minimumVisibleWidth, accuracy: 0.0001)
     }
 
     func testActionLaneSolidSurfaceAllowsTrimWhenButtonsDoNotOverflow() {
@@ -973,6 +1056,22 @@ final class BonsplitTests: XCTestCase {
         appearance.splitButtons = [duplicateRunTests, firstRunTests, .splitRight]
 
         XCTAssertEqual(appearance.splitButtons, [duplicateRunTests, .splitRight])
+    }
+
+    func testAppearanceDefaultsToHairlineDividerThickness() {
+        XCTAssertEqual(BonsplitConfiguration.Appearance().dividerThickness, 1)
+    }
+
+    func testAppearanceCarriesConfiguredDividerThickness() {
+        let appearance = BonsplitConfiguration.Appearance(dividerThickness: 3)
+        XCTAssertEqual(appearance.dividerThickness, 3)
+    }
+
+    func testResolvedDividerThicknessClampsToRange() {
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(2), 2)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(-5), TabBarMetrics.minimumDividerThickness)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(999), TabBarMetrics.maximumDividerThickness)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(.nan), TabBarMetrics.dividerThickness)
     }
 
     @MainActor
@@ -4322,5 +4421,28 @@ final class BonsplitTests: XCTestCase {
             throw NSError(domain: "BonsplitTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create mouse event"])
         }
         return event
+    }
+
+    // MARK: - Tab Width Mode
+
+    /// The tab strip must default to fixed-width sizing so existing layouts are
+    /// unchanged; fill is strictly opt-in.
+    func testTabWidthModeDefaultsToFixed() {
+        XCTAssertEqual(BonsplitConfiguration.Appearance().tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.default.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.compact.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.spacious.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.default.appearance.tabWidthMode, .fixed)
+    }
+
+    /// Opting into fill is preserved on the configuration and is distinct from fixed.
+    func testTabWidthModeFillIsSettableAndDistinct() {
+        var appearance = BonsplitConfiguration.Appearance()
+        appearance.tabWidthMode = .fill
+        XCTAssertEqual(appearance.tabWidthMode, .fill)
+        XCTAssertNotEqual(BonsplitConfiguration.Appearance.TabWidthMode.fill, .fixed)
+
+        let configured = BonsplitConfiguration.Appearance(tabWidthMode: .fill)
+        XCTAssertEqual(configured.tabWidthMode, .fill)
     }
 }
