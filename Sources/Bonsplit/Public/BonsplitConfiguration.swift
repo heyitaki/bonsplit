@@ -287,6 +287,15 @@ extension BonsplitConfiguration {
         public var icon: Icon
         public var tooltip: String?
         public var action: Action
+        public var activatesOnMouseDown: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case icon
+            case tooltip
+            case action
+            case activatesOnMouseDown
+        }
 
         public var systemImage: String {
             if case .systemImage(let name) = icon {
@@ -299,13 +308,15 @@ extension BonsplitConfiguration {
             id: String,
             systemImage: String,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false
         ) {
             self.init(
                 id: id,
                 icon: .systemImage(systemImage),
                 tooltip: tooltip,
-                action: action
+                action: action,
+                activatesOnMouseDown: activatesOnMouseDown
             )
         }
 
@@ -313,12 +324,34 @@ extension BonsplitConfiguration {
             id: String,
             icon: Icon,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false
         ) {
             self.id = id
             self.icon = icon
             self.tooltip = tooltip
             self.action = action
+            self.activatesOnMouseDown = activatesOnMouseDown
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            icon = try container.decode(Icon.self, forKey: .icon)
+            tooltip = try container.decodeIfPresent(String.self, forKey: .tooltip)
+            action = try container.decode(Action.self, forKey: .action)
+            activatesOnMouseDown = try container.decodeIfPresent(Bool.self, forKey: .activatesOnMouseDown) ?? false
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(icon, forKey: .icon)
+            try container.encodeIfPresent(tooltip, forKey: .tooltip)
+            try container.encode(action, forKey: .action)
+            if activatesOnMouseDown {
+                try container.encode(activatesOnMouseDown, forKey: .activatesOnMouseDown)
+            }
         }
 
         public static let newTerminal = SplitActionButton(
@@ -464,6 +497,23 @@ extension BonsplitConfiguration {
             }
         }
 
+        /// Controls how surface tabs are sized within a pane's tab bar.
+        public enum TabWidthMode: Sendable, Equatable, Codable {
+            /// Tabs use a fixed width clamped to `tabMinWidth...tabMaxWidth` and the
+            /// tab strip scrolls horizontally once the tabs overflow the pane. This is
+            /// the default and preserves Bonsplit's historical layout exactly.
+            case fixed
+
+            /// Tabs stretch to fill the pane's available tab-bar width, distributing the
+            /// space equally between them.
+            ///
+            /// A single tab spans the full available width; multiple tabs share it
+            /// evenly. When the tabs would overflow the pane at their natural width,
+            /// the strip falls back to ``fixed`` sizing and scrolls, so this mode never
+            /// shrinks tabs below their natural width.
+            case fill
+        }
+
         // MARK: - Tab Bar
 
         /// Height of the tab bar
@@ -483,6 +533,10 @@ extension BonsplitConfiguration {
         /// Spacing between tabs
         public var tabSpacing: CGFloat
 
+        /// Controls whether tabs use a fixed width and scroll, or stretch to fill the
+        /// pane's available tab-bar width. Defaults to ``TabWidthMode/fixed``.
+        public var tabWidthMode: TabWidthMode
+
         // MARK: - Split View
 
         /// Minimum width of a pane
@@ -490,6 +544,13 @@ extension BonsplitConfiguration {
 
         /// Minimum height of a pane
         public var minimumPaneHeight: CGFloat
+
+        /// Thickness, in points, of the divider drawn between split panes.
+        ///
+        /// Defaults to `1` to match the historical hairline divider. Hosts can
+        /// raise this to make the separator between adjacent panes easier to see.
+        /// Values are clamped to a sane range when applied to the split view.
+        public var dividerThickness: CGFloat
 
         /// Whether to show split buttons in the tab bar
         public var showSplitButtons: Bool
@@ -572,8 +633,10 @@ extension BonsplitConfiguration {
             tabMaxWidth: CGFloat = 220,
             tabTitleFontSize: CGFloat = 11,
             tabSpacing: CGFloat = 0,
+            tabWidthMode: TabWidthMode = .fixed,
             minimumPaneWidth: CGFloat = 100,
             minimumPaneHeight: CGFloat = 100,
+            dividerThickness: CGFloat = 1,
             showSplitButtons: Bool = true,
             splitButtons: [SplitActionButton] = SplitActionButton.defaults,
             splitButtonsOnHover: Bool = false,
@@ -593,8 +656,10 @@ extension BonsplitConfiguration {
             self.tabMaxWidth = tabMaxWidth
             self.tabTitleFontSize = tabTitleFontSize
             self.tabSpacing = tabSpacing
+            self.tabWidthMode = tabWidthMode
             self.minimumPaneWidth = minimumPaneWidth
             self.minimumPaneHeight = minimumPaneHeight
+            self.dividerThickness = dividerThickness
             self.showSplitButtons = showSplitButtons
             self.splitButtons = Self.uniqueSplitButtons(splitButtons)
             self.splitButtonsOnHover = splitButtonsOnHover
