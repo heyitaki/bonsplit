@@ -179,6 +179,38 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
+    func testTabAudioPlayingRoundTrips() {
+        let controller = BonsplitController()
+        let tabId = controller.createTab(title: "Audio", icon: "globe", isAudioPlaying: true)!
+
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+
+        // A nil update leaves the flag untouched; an explicit false clears it.
+        controller.updateTab(tabId, title: "Audio 2")
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+
+        controller.updateTab(tabId, isAudioPlaying: false)
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, false)
+
+        controller.updateTab(tabId, isAudioPlaying: true)
+        XCTAssertEqual(controller.tab(tabId)?.isAudioPlaying, true)
+    }
+
+    @MainActor
+    func testSplitPaneWithTabPreservesAudioPlaying() {
+        let controller = BonsplitController()
+        _ = controller.createTab(title: "Base", icon: "doc")
+        let playing = Bonsplit.Tab(title: "Playing", isAudioPlaying: true)
+
+        let newPane = controller.splitPane(orientation: .horizontal, withTab: playing)
+
+        XCTAssertNotNil(newPane)
+        // The supplied tab's audio-playing state must survive the public
+        // Tab -> internal TabItem conversion in the split path.
+        XCTAssertEqual(controller.tab(playing.id)?.isAudioPlaying, true)
+    }
+
+    @MainActor
     func testTabClose() {
         let controller = BonsplitController()
         let tabId = controller.createTab(title: "Test Tab", icon: "doc")!
@@ -271,6 +303,36 @@ final class BonsplitTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
 
         XCTAssertEqual(decoded, button)
+    }
+
+    func testCustomSplitActionButtonCanActivateOnMouseDown() throws {
+        let button = BonsplitConfiguration.SplitActionButton(
+            id: "tools",
+            systemImage: "ellipsis.vertical",
+            tooltip: "Tools",
+            action: .custom("tools"),
+            activatesOnMouseDown: true
+        )
+
+        let data = try JSONEncoder().encode(button)
+        let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
+
+        XCTAssertEqual(decoded, button)
+        XCTAssertTrue(decoded.activatesOnMouseDown)
+    }
+
+    func testSplitActionButtonDecodesMissingMouseDownActivationAsFalse() throws {
+        let data = #"""
+        {
+          "id": "terminal",
+          "icon": { "type": "systemImage", "name": "terminal" },
+          "action": "newTerminal"
+        }
+        """#.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(BonsplitConfiguration.SplitActionButton.self, from: data)
+
+        XCTAssertFalse(decoded.activatesOnMouseDown)
     }
 
     func testCustomSplitActionButtonPreservesReservedActionName() throws {
@@ -373,6 +435,24 @@ final class BonsplitTests: XCTestCase {
         XCTAssertTrue(first === second)
     }
 
+    func testSplitActionSystemImageKeepsSupportedSymbols() {
+        let image = TabBarStyling.splitActionSystemImage(for: "terminal")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "terminal", rotationDegrees: 0, pointSize: 12))
+    }
+
+    func testSplitActionSystemImageRendersVerticalEllipsisFallback() {
+        let image = TabBarStyling.splitActionSystemImage(for: "ellipsis.vertical")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "ellipsis", rotationDegrees: 90, pointSize: 10.5))
+    }
+
+    func testSplitActionSystemImageUsesFallbackForUnknownSymbols() {
+        let image = TabBarStyling.splitActionSystemImage(for: "cmux.definitely.missing.symbol")
+
+        XCTAssertEqual(image, TabBarStyling.SplitActionSystemImage(name: "questionmark.circle", rotationDegrees: 0, pointSize: 12))
+    }
+
     func testMinimalModeDoesNotReserveHiddenSplitButtonStrip() {
         XCTAssertEqual(
             TabBarStyling.trailingTabContentInset(showSplitButtons: true, isMinimalMode: true),
@@ -435,7 +515,7 @@ final class BonsplitTests: XCTestCase {
         XCTAssertEqual(layout.trailingTabContentInset, 160)
     }
 
-    func testTabBarLayoutCapsSplitButtonLaneToQuarterOfAvailableWidth() {
+    func testTabBarLayoutKeepsFiveActionButtonsVisibleBeforeClipping() {
         let layout = TabBarLayout(
             tabBarHeight: 28,
             availableWidth: 240,
@@ -444,11 +524,12 @@ final class BonsplitTests: XCTestCase {
             reservesSplitButtonLane: true,
             measuredSplitButtonLaneWidth: 400
         )
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
 
         XCTAssertEqual(layout.fullSplitButtonLaneWidth, 400)
-        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.trailingTabContentInset, 60)
+        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.trailingTabContentInset, minimumVisibleWidth)
         XCTAssertTrue(layout.splitButtonLaneOverflowsViewport)
     }
 
@@ -463,9 +544,10 @@ final class BonsplitTests: XCTestCase {
             measuredSplitButtonLaneWidth: 400
         )
 
-        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60)
-        XCTAssertEqual(layout.trailingTabContentInset, 60)
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
+        XCTAssertEqual(layout.maximumSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth)
+        XCTAssertEqual(layout.trailingTabContentInset, minimumVisibleWidth)
     }
 
     func testTabBarLayoutUsesTrailingWhitespaceBeforeClippingSplitButtons() {
@@ -523,9 +605,10 @@ final class BonsplitTests: XCTestCase {
             masksTabContent: true
         )
 
-        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, 60, accuracy: 0.0001)
-        XCTAssertEqual(geometry.backgroundSolidWidth, 60, accuracy: 0.0001)
-        XCTAssertEqual(geometry.contentOcclusionWidth, 60, accuracy: 0.0001)
+        let minimumVisibleWidth = TabBarStyling.splitButtonsBackdropWidth(buttonCount: 5)
+        XCTAssertEqual(layout.visibleSplitButtonLaneWidth, minimumVisibleWidth, accuracy: 0.0001)
+        XCTAssertEqual(geometry.backgroundSolidWidth, minimumVisibleWidth, accuracy: 0.0001)
+        XCTAssertEqual(geometry.contentOcclusionWidth, minimumVisibleWidth, accuracy: 0.0001)
     }
 
     func testActionLaneSolidSurfaceAllowsTrimWhenButtonsDoNotOverflow() {
@@ -973,6 +1056,22 @@ final class BonsplitTests: XCTestCase {
         appearance.splitButtons = [duplicateRunTests, firstRunTests, .splitRight]
 
         XCTAssertEqual(appearance.splitButtons, [duplicateRunTests, .splitRight])
+    }
+
+    func testAppearanceDefaultsToHairlineDividerThickness() {
+        XCTAssertEqual(BonsplitConfiguration.Appearance().dividerThickness, 1)
+    }
+
+    func testAppearanceCarriesConfiguredDividerThickness() {
+        let appearance = BonsplitConfiguration.Appearance(dividerThickness: 3)
+        XCTAssertEqual(appearance.dividerThickness, 3)
+    }
+
+    func testResolvedDividerThicknessClampsToRange() {
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(2), 2)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(-5), TabBarMetrics.minimumDividerThickness)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(999), TabBarMetrics.maximumDividerThickness)
+        XCTAssertEqual(TabBarMetrics.resolvedDividerThickness(.nan), TabBarMetrics.dividerThickness)
     }
 
     @MainActor
@@ -1574,7 +1673,8 @@ final class BonsplitTests: XCTestCase {
                 return [
                     TabContextMoveDestination(id: "workspace:abc", title: "Workspace A", isEnabled: false)
                 ]
-            }
+            },
+            forkConversationOpenAvailabilityProvider: { nil }
         )
 
         let menu = TabContextMenuBuilder.makeMenu(snapshot: snapshot, target: target)
@@ -1621,7 +1721,8 @@ final class BonsplitTests: XCTestCase {
                 hasSplits: false,
                 shortcuts: [:]
             ),
-            moveDestinationsProvider: { [] }
+            moveDestinationsProvider: { [] },
+            forkConversationOpenAvailabilityProvider: { nil }
         )
 
         let menu = TabContextMenuBuilder.makeMenu(snapshot: snapshot, target: target)
@@ -1655,7 +1756,8 @@ final class BonsplitTests: XCTestCase {
                 hasSplits: false,
                 shortcuts: [:]
             ),
-            moveDestinationsProvider: { [] }
+            moveDestinationsProvider: { [] },
+            forkConversationOpenAvailabilityProvider: { nil }
         )
 
         let menu = TabContextMenuBuilder.makeMenu(snapshot: snapshot, target: target)
@@ -1691,7 +1793,8 @@ final class BonsplitTests: XCTestCase {
         let snapshot = TabContextMenuSnapshot(
             tabId: UUID(),
             state: state,
-            moveDestinationsProvider: { [] }
+            moveDestinationsProvider: { [] },
+            forkConversationOpenAvailabilityProvider: { nil }
         )
 
         let menu = TabContextMenuBuilder.makeMenu(snapshot: snapshot, target: target)
@@ -1710,6 +1813,45 @@ final class BonsplitTests: XCTestCase {
         let newTabItem = try XCTUnwrap(destinationItems.first { $0.title == "New Tab" })
         target.performContextAction(newTabItem)
         XCTAssertEqual(selectedAction, .forkConversationNewTab)
+    }
+
+    @MainActor
+    func testTabContextMenuBuilderKeepsForkConversationVisibleWhenOpenAvailabilityIsRefreshing() throws {
+        let target = TabContextMenuActionTarget()
+        let state = TabContextMenuState(
+            isPinned: false,
+            isUnread: false,
+            isBrowser: false,
+            isAudioMuted: false,
+            isTerminal: true,
+            hasCustomTitle: false,
+            canCloseToLeft: true,
+            canCloseToRight: true,
+            canCloseOthers: true,
+            canMoveToNewWorkspace: false,
+            canMoveToLeftPane: false,
+            canMoveToRightPane: false,
+            canForkConversation: true,
+            forkConversationDefaultAction: .forkConversationLeft,
+            isZoomed: false,
+            hasSplits: false,
+            shortcuts: [:]
+        )
+        let snapshot = TabContextMenuSnapshot(
+            tabId: UUID(),
+            state: state,
+            moveDestinationsProvider: { [] },
+            forkConversationOpenAvailabilityProvider: { false }
+        )
+
+        let menu = TabContextMenuBuilder.makeMenu(snapshot: snapshot, target: target)
+        let forkItem = try XCTUnwrap(menu.items.first { $0.title == "Fork Conversation" })
+        let forkSubmenuItem = try XCTUnwrap(menu.items.first { $0.title == "Fork Conversation To" })
+        let destinationItems = try XCTUnwrap(forkSubmenuItem.submenu?.items.filter { !$0.isSeparatorItem })
+
+        XCTAssertFalse(forkItem.isEnabled)
+        XCTAssertFalse(forkSubmenuItem.isEnabled)
+        XCTAssertEqual(destinationItems.map(\.isEnabled), Array(repeating: false, count: 6))
     }
 
     @MainActor
@@ -1824,6 +1966,7 @@ final class BonsplitTests: XCTestCase {
             splitButtons: []
         )
         let controller = BonsplitController(configuration: BonsplitConfiguration(appearance: appearance))
+        controller.tabShortcutHintsEnabled = false
         let pane = controller.internalController.rootNode.allPanes.first!
         let tab = TabItem(title: "~", icon: "terminal.fill")
         pane.tabs = [tab]
@@ -2048,6 +2191,10 @@ final class BonsplitTests: XCTestCase {
                 TabControlShortcutHintPolicy.hintModifier(for: [.command], defaults: defaults)?.symbol,
                 "⌃"
             )
+            XCTAssertEqual(
+                TabControlShortcutHintPolicy.configuredShortcutModifierSymbol(defaults: defaults),
+                "⌃"
+            )
             XCTAssertNil(TabControlShortcutHintPolicy.hintModifier(for: [], defaults: defaults))
             XCTAssertNil(TabControlShortcutHintPolicy.hintModifier(for: [.control, .shift], defaults: defaults))
             XCTAssertNil(TabControlShortcutHintPolicy.hintModifier(for: [.command, .option], defaults: defaults))
@@ -2065,6 +2212,10 @@ final class BonsplitTests: XCTestCase {
 
             let custom = TabControlShortcutHintPolicy.hintModifier(for: [.command], defaults: defaults)
             XCTAssertEqual(custom?.symbol, "⌥⌘")
+            XCTAssertEqual(
+                TabControlShortcutHintPolicy.configuredShortcutModifierSymbol(defaults: defaults),
+                "⌥⌘"
+            )
             XCTAssertEqual(
                 TabControlShortcutHintPolicy.hintModifier(for: [.command], defaults: defaults)?.symbol,
                 "⌥⌘"
@@ -2336,6 +2487,152 @@ final class BonsplitTests: XCTestCase {
 
         XCTAssertEqual(range.lowerBound, TabBarMetrics.tabMinWidth)
         XCTAssertEqual(range.upperBound, 220)
+    }
+
+    func testIconOnlyPinnedRequiresPinnedBrowserTab() {
+        // Pinned browser tabs collapse to icon-only; everything else keeps its title.
+        XCTAssertTrue(TabItemStyling.isIconOnlyPinned(isPinned: true, kind: "browser"))
+        XCTAssertFalse(TabItemStyling.isIconOnlyPinned(isPinned: false, kind: "browser"))
+        XCTAssertFalse(TabItemStyling.isIconOnlyPinned(isPinned: true, kind: "terminal"))
+        XCTAssertFalse(TabItemStyling.isIconOnlyPinned(isPinned: true, kind: nil))
+        XCTAssertFalse(TabItemStyling.isIconOnlyPinned(isPinned: false, kind: "terminal"))
+    }
+
+    func testIconOnlyPinnedKindMatchesBrowserTabKindConstant() {
+        XCTAssertTrue(
+            TabItemStyling.isIconOnlyPinned(isPinned: true, kind: TabItemStyling.browserTabKind)
+        )
+    }
+
+    func testPinnedIconOnlyWidthHugsIconWithPadding() {
+        let width = TabItemStyling.pinnedIconOnlyWidth(iconSlotSize: 14, horizontalPadding: 6)
+
+        // Favicon slot + symmetric padding + breathing room.
+        XCTAssertEqual(width, ceil(14 + 6 * 2 + 6))
+        // The whole point: a pinned browser tab is narrower than the standard tab minimum.
+        XCTAssertLessThan(width, TabBarMetrics.tabMinWidth)
+    }
+
+    func testPinnedIconOnlyWidthClampsDegenerateInputs() {
+        // Non-positive icon/padding inputs are floored so the chip never collapses to zero.
+        let width = TabItemStyling.pinnedIconOnlyWidth(iconSlotSize: 0, horizontalPadding: -10)
+        XCTAssertEqual(width, ceil(1 + 0 + 6))
+        XCTAssertGreaterThan(width, 0)
+    }
+
+    func testPinnedIconOnlyWidthKeepsBaseWhenNoShortcutHintReserved() {
+        let base = TabItemStyling.pinnedIconOnlyWidth(iconSlotSize: 14, horizontalPadding: 6)
+        let reserved = TabItemStyling.pinnedIconOnlyWidth(
+            iconSlotSize: 14,
+            horizontalPadding: 6,
+            reservedShortcutHintWidth: nil
+        )
+        XCTAssertEqual(reserved, base)
+    }
+
+    func testPinnedIconOnlyWidthReservesShortcutHintPillToAvoidLayoutShift() {
+        // A wide hint pill expands the chip so the pill (shown only on modifier-hold)
+        // always fits without resizing the tab.
+        let pill: CGFloat = 30
+        let width = TabItemStyling.pinnedIconOnlyWidth(
+            iconSlotSize: 14,
+            horizontalPadding: 6,
+            reservedShortcutHintWidth: pill
+        )
+        XCTAssertEqual(width, ceil(pill + 6 * 2))
+        XCTAssertGreaterThan(width, TabItemStyling.pinnedIconOnlyWidth(iconSlotSize: 14, horizontalPadding: 6))
+    }
+
+    func testPinnedIconOnlyWidthKeepsBaseWhenReservedHintIsNarrow() {
+        // A narrow hint that fits inside the base chip must not shrink the tab.
+        let base = TabItemStyling.pinnedIconOnlyWidth(iconSlotSize: 14, horizontalPadding: 6)
+        let width = TabItemStyling.pinnedIconOnlyWidth(
+            iconSlotSize: 14,
+            horizontalPadding: 6,
+            reservedShortcutHintWidth: 1
+        )
+        XCTAssertEqual(width, base)
+    }
+
+    func testTabShortcutHintSlotWidthDoesNotChangeWithFocus() {
+        let label = "⌃9"
+        let accessorySlotSize: CGFloat = 18
+
+        let focusedWidth = TabItemStyling.reservedShortcutHintSlotWidth(
+            shortcutHintLabel: label,
+            tabShortcutHintsEnabled: true,
+            isFocused: true,
+            accessorySlotSize: accessorySlotSize,
+            xOffset: 0
+        )
+        let unfocusedWidth = TabItemStyling.reservedShortcutHintSlotWidth(
+            shortcutHintLabel: label,
+            tabShortcutHintsEnabled: true,
+            isFocused: false,
+            accessorySlotSize: accessorySlotSize,
+            xOffset: 0
+        )
+
+        // Focusing a pane must not resize its tabs: the reserved width is
+        // focus-independent, so the tab bar never shifts as focus moves.
+        XCTAssertEqual(focusedWidth, unfocusedWidth)
+    }
+
+    func testTabShortcutHintSlotReservesOnlyAccessoryWidth() {
+        // The trailing accessory reserves just the close-button width. The
+        // shortcut-hint pill overlays that slot (mutually exclusive with the
+        // close button, non-interactive) instead of widening the tab, so a tab
+        // carrying a ⌃/⌘ digit is no wider than one without. Prevents the
+        // "digit tabs are permanently ~11pt too wide" regression.
+        let label = "⌃9"
+        let accessorySlotSize: CGFloat = 18
+
+        for isFocused in [true, false] {
+            let width = TabItemStyling.reservedShortcutHintSlotWidth(
+                shortcutHintLabel: label,
+                tabShortcutHintsEnabled: true,
+                isFocused: isFocused,
+                accessorySlotSize: accessorySlotSize,
+                xOffset: 0
+            )
+            XCTAssertEqual(width, accessorySlotSize)
+        }
+    }
+
+    func testTabShortcutHintSlotWidthCollapsesWhenHintsDisabled() {
+        let label = "⌃9"
+        let accessorySlotSize: CGFloat = 18
+
+        for isFocused in [true, false] {
+            let width = TabItemStyling.reservedShortcutHintSlotWidth(
+                shortcutHintLabel: label,
+                tabShortcutHintsEnabled: false,
+                isFocused: isFocused,
+                accessorySlotSize: accessorySlotSize,
+                xOffset: 0
+            )
+            // With hints disabled no hint width is reserved, regardless of focus.
+            XCTAssertEqual(width, accessorySlotSize)
+        }
+    }
+
+    func testTabShortcutHintWidthUsesSharedPillPadding() {
+        // Still used to reserve the hint pill on icon-only pinned browser tabs.
+        let label = "⌘9"
+        let textWidth = (label as NSString).size(
+            withAttributes: TabControlShortcutHintStyle.measurementAttributes
+        ).width
+
+        XCTAssertEqual(
+            TabItemStyling.shortcutHintWidth(for: label),
+            ceil(textWidth) + (TabControlShortcutHintStyle.horizontalPadding * 2)
+        )
+    }
+
+    func testTabShortcutHintStyleMatchesCommandHintPillFont() {
+        XCTAssertEqual(TabControlShortcutHintStyle.fontSize, 9)
+        XCTAssertEqual(TabControlShortcutHintStyle.nsFontWeight, .semibold)
+        XCTAssertEqual(TabControlShortcutHintStyle.measurementFont.fontDescriptor.object(forKey: .face) as? String, "Semibold")
     }
 
     func testActiveTabIndicatorHeightIsOneAndHalfPixels() {
@@ -4009,6 +4306,7 @@ final class BonsplitTests: XCTestCase {
         extract: (NSView) -> T?
     ) -> T? {
         let controller = BonsplitController(configuration: BonsplitConfiguration(appearance: appearance))
+        controller.tabShortcutHintsEnabled = false
         guard let pane = controller.internalController.rootNode.allPanes.first else { return nil }
         if let configurePane {
             configurePane(pane)
@@ -4322,5 +4620,28 @@ final class BonsplitTests: XCTestCase {
             throw NSError(domain: "BonsplitTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create mouse event"])
         }
         return event
+    }
+
+    // MARK: - Tab Width Mode
+
+    /// The tab strip must default to fixed-width sizing so existing layouts are
+    /// unchanged; fill is strictly opt-in.
+    func testTabWidthModeDefaultsToFixed() {
+        XCTAssertEqual(BonsplitConfiguration.Appearance().tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.default.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.compact.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.Appearance.spacious.tabWidthMode, .fixed)
+        XCTAssertEqual(BonsplitConfiguration.default.appearance.tabWidthMode, .fixed)
+    }
+
+    /// Opting into fill is preserved on the configuration and is distinct from fixed.
+    func testTabWidthModeFillIsSettableAndDistinct() {
+        var appearance = BonsplitConfiguration.Appearance()
+        appearance.tabWidthMode = .fill
+        XCTAssertEqual(appearance.tabWidthMode, .fill)
+        XCTAssertNotEqual(BonsplitConfiguration.Appearance.TabWidthMode.fill, .fixed)
+
+        let configured = BonsplitConfiguration.Appearance(tabWidthMode: .fill)
+        XCTAssertEqual(configured.tabWidthMode, .fill)
     }
 }

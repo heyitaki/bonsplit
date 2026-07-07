@@ -16,6 +16,21 @@ extension View {
             transaction.animation = nil
         }
     }
+
+    /// Imposes a minimum width on the tab row only when `minWidth` is non-nil.
+    ///
+    /// Used by the tab strip's fill mode to force the horizontal `ScrollView` to hand
+    /// the row the full viewport width so SwiftUI can distribute slack across flexible
+    /// tabs. Passing `nil` returns the view untouched, preserving the fixed-width layout
+    /// byte-for-byte.
+    @ViewBuilder
+    func tabRowFillMinWidth(_ minWidth: CGFloat?) -> some View {
+        if let minWidth {
+            frame(minWidth: minWidth, alignment: .leading)
+        } else {
+            self
+        }
+    }
 }
 
 private enum TabControlShortcutHintDebugSettings {
@@ -29,6 +44,68 @@ private enum TabControlShortcutHintDebugSettings {
 
     static func clamped(_ value: Double) -> Double {
         min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
+enum TabControlShortcutHintStyle {
+    static let fontSize: CGFloat = 9
+    static let fontWeight: Font.Weight = .semibold
+    static let nsFontWeight: NSFont.Weight = .semibold
+    static let fontDesign: Font.Design = .rounded
+    static let foregroundColor = Color.primary
+    static let horizontalPadding: CGFloat = 6
+    static let verticalPadding: CGFloat = 2
+    static let strokeOpacity = 0.30
+    static let strokeWidth: CGFloat = 0.8
+    static let shadowOpacity = 0.22
+    static let shadowRadius: CGFloat = 2
+    static let shadowX: CGFloat = 0
+    static let shadowY: CGFloat = 1
+
+    static let font: Font = .system(size: fontSize, weight: fontWeight, design: fontDesign)
+    static let measurementFont: NSFont = {
+        let baseFont = NSFont.systemFont(ofSize: fontSize, weight: nsFontWeight)
+        return baseFont.fontDescriptor.withDesign(.rounded)
+            .flatMap { NSFont(descriptor: $0, size: fontSize) } ?? baseFont
+    }()
+    static let measurementAttributes: [NSAttributedString.Key: Any] = [
+        .font: measurementFont
+    ]
+}
+
+struct TabControlShortcutHintPillBackground: View {
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(.regularMaterial)
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(
+                        Color.white.opacity(TabControlShortcutHintStyle.strokeOpacity),
+                        lineWidth: TabControlShortcutHintStyle.strokeWidth
+                    )
+            )
+            .shadow(
+                color: Color.black.opacity(TabControlShortcutHintStyle.shadowOpacity),
+                radius: TabControlShortcutHintStyle.shadowRadius,
+                x: TabControlShortcutHintStyle.shadowX,
+                y: TabControlShortcutHintStyle.shadowY
+            )
+    }
+}
+
+struct TabControlShortcutHintPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(TabControlShortcutHintStyle.font)
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundColor(TabControlShortcutHintStyle.foregroundColor)
+            .padding(.horizontal, TabControlShortcutHintStyle.horizontalPadding)
+            .padding(.vertical, TabControlShortcutHintStyle.verticalPadding)
+            .background(TabControlShortcutHintPillBackground())
     }
 }
 
@@ -47,6 +124,43 @@ enum TabItemStyling {
         return minimum...maximum
     }
 
+    /// Natural width of the ⌃/⌘ shortcut-hint pill for `label`. The standard tab
+    /// strip overlays this pill without reserving width, but icon-only pinned
+    /// browser tabs (which have no close button to overlay) still reserve it so
+    /// holding the modifier never resizes the pinned chip.
+    static func shortcutHintWidth(for label: String) -> CGFloat {
+        let textWidth = (label as NSString).size(withAttributes: TabControlShortcutHintStyle.measurementAttributes).width
+        return ceil(textWidth) + (TabControlShortcutHintStyle.horizontalPadding * 2)
+    }
+
+    /// Width of a tab's trailing accessory slot.
+    ///
+    /// The slot reserves only the close-button (`accessorySlotSize`) width and
+    /// never widens for the keyboard-shortcut hint. The ⌃/⌘ digit pill overlays
+    /// this same slot (it is mutually exclusive with the close button and
+    /// non-interactive), rendering at its natural size within the tab's trailing
+    /// padding instead of pushing layout. Two consequences, both intended:
+    ///   1. A tab carrying a ⌃/⌘ digit is exactly as wide as one without, so the
+    ///      hint feature no longer makes tabs wider.
+    ///   2. The reserved width is a constant, independent of `isFocused`,
+    ///      `tabShortcutHintsEnabled`, the label, and the debug `xOffset`, so the
+    ///      tab bar never shifts when a pane gains/loses focus or ⌃/⌘ is held.
+    /// The parameters are accepted so the call site can pass the live state, but
+    /// none of them may affect the result.
+    static func reservedShortcutHintSlotWidth(
+        shortcutHintLabel: String?,
+        tabShortcutHintsEnabled: Bool,
+        isFocused: Bool,
+        accessorySlotSize: CGFloat,
+        xOffset: Double
+    ) -> CGFloat {
+        // Deliberately ignores every hint/focus input: the pill overlays the
+        // accessory slot, so the reserved layout width is always just the
+        // close-button size. See the doc comment above.
+        _ = (shortcutHintLabel, tabShortcutHintsEnabled, isFocused, xOffset)
+        return accessorySlotSize
+    }
+
     static func resolvedFaviconImage(existing: NSImage?, incomingData: Data?) -> NSImage? {
         guard let incomingData else { return nil }
         if let decoded = NSImage(data: incomingData) {
@@ -56,6 +170,41 @@ enum TabItemStyling {
         }
         return existing
     }
+
+    /// Host-defined tab kind identifier for browser surfaces. Pinned browser tabs
+    /// collapse to an icon-only chip (favicon only) to mirror pinned tabs in macOS
+    /// browsers, freeing tab-bar space for long-lived utility pages.
+    static let browserTabKind = "browser"
+
+    /// Whether a tab should render in the compact icon-only style reserved for
+    /// pinned browser surfaces. Terminal and other kinds keep their titled layout
+    /// when pinned because they have no distinguishing favicon to collapse to.
+    static func isIconOnlyPinned(isPinned: Bool, kind: String?) -> Bool {
+        isPinned && kind == browserTabKind
+    }
+
+    /// Fixed width for an icon-only pinned browser tab: the favicon slot plus the
+    /// tab's symmetric horizontal padding and a little breathing room, so the tab
+    /// shrinks to roughly a square chip hugging its icon.
+    static func pinnedIconOnlyWidth(iconSlotSize: CGFloat, horizontalPadding: CGFloat) -> CGFloat {
+        let icon = max(1, iconSlotSize)
+        let padding = max(0, horizontalPadding)
+        return ceil(icon + padding * 2 + 6)
+    }
+
+    /// Icon-only pinned width that also reserves room for the control-shortcut hint
+    /// pill when one can be shown, so holding the modifier never resizes the tab.
+    /// Pass `reservedShortcutHintWidth == nil` when the tab has no hint to reserve.
+    static func pinnedIconOnlyWidth(
+        iconSlotSize: CGFloat,
+        horizontalPadding: CGFloat,
+        reservedShortcutHintWidth: CGFloat?
+    ) -> CGFloat {
+        let base = pinnedIconOnlyWidth(iconSlotSize: iconSlotSize, horizontalPadding: horizontalPadding)
+        guard let reservedShortcutHintWidth else { return base }
+        let reserved = ceil(max(0, reservedShortcutHintWidth) + max(0, horizontalPadding) * 2)
+        return max(base, reserved)
+    }
 }
 
 /// Individual tab view with icon, title, close button, and dirty indicator
@@ -64,15 +213,23 @@ struct TabItemView: View {
     let isSelected: Bool
     let showsZoomIndicator: Bool
     let appearance: BonsplitConfiguration.Appearance
+    /// When true, the tab drops its fixed maximum width and grows to fill the slack
+    /// the enclosing tab strip distributes (see ``BonsplitConfiguration/Appearance/tabWidthMode``).
+    let fillsWidth: Bool
     let saturation: Double
     let trailingSeparatorBottomInset: CGFloat
     let controlShortcutDigit: Int?
-    let allowsShortcutHints: Bool
+    /// Whether tab keyboard-shortcut hints are enabled at all (a global setting,
+    /// independent of which pane is focused). Drives the reserved hint-slot width.
+    let tabShortcutHintsEnabled: Bool
+    /// Whether this tab's pane is focused. Gates hint *visibility*, never width.
+    let isFocused: Bool
     let showsControlShortcutHint: Bool
     let shortcutModifierSymbol: String
     let allowsClose: Bool
     let contextMenuState: TabContextMenuState
     let moveDestinationsProvider: () -> [TabContextMoveDestination]
+    let forkConversationOpenAvailabilityProvider: () -> Bool?
     let onSelect: () -> Void
     let onClose: (TabCloseRequestSource) -> Void
     let onZoomToggle: () -> Void
@@ -82,6 +239,7 @@ struct TabItemView: View {
     @State private var isHovered = false
     @State private var isCloseHovered = false
     @State private var isZoomHovered = false
+    @State private var isAudioHovered = false
     @State private var showGlobeFallback = true
     @State private var globeFallbackWorkItem: DispatchWorkItem?
     @State private var lastIsLoadingObserved = false
@@ -93,59 +251,86 @@ struct TabItemView: View {
     @AppStorage(TabControlShortcutHintDebugSettings.alwaysShowKey) private var alwaysShowShortcutHints = TabControlShortcutHintDebugSettings.defaultAlwaysShow
 
     var body: some View {
+        tabContent
+        .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
+        .frame(
+            minWidth: frameMinWidth,
+            // In fill mode the tab becomes flexible so the tab strip can distribute
+            // slack equally across tabs; the fixed upper bound only applies otherwise.
+            // Pinned browser tabs pin both bounds to a compact icon-only width.
+            maxWidth: frameMaxWidth,
+            minHeight: tabHeight,
+            maxHeight: tabHeight
+        )
+        // Fixed mode: size each tab to its own content and ignore the width the
+        // tab strip would otherwise propose. Without this the flexible `maxWidth`
+        // frame lets SwiftUI distribute slack equally across tabs, so a single
+        // long-titled tab drags every other tab wider (and over-truncates short
+        // titles). Fill mode keeps the flexible behavior so tabs share the strip.
+        // Icon-only pinned tabs always size to their fixed compact width.
+        .fixedSize(horizontal: isIconOnlyPinned || !fillsWidth, vertical: false)
+        .background(tabBackground.saturation(saturation))
+        .tabControlShortcutHintVisibilityAnimation(value: showsShortcutHint)
+        .contentShape(Rectangle().inset(by: -BonsplitTabItemHitTesting.horizontalSlop))
+        // Middle click to close (macOS convention).
+        // Uses an AppKit event monitor so it doesn't interfere with left click selection or drag/reorder.
+        .background(MiddleClickMonitorView(onMiddleClick: {
+            guard allowsClose, !tab.isPinned else { return }
+            onClose(.middleClick)
+        }))
+        .background(TabContextMenuPresenter(
+            snapshot: TabContextMenuSnapshot(
+                tabId: tab.id,
+                state: contextMenuState,
+                moveDestinationsProvider: moveDestinationsProvider,
+                forkConversationOpenAvailabilityProvider: forkConversationOpenAvailabilityProvider
+            ),
+            onContextAction: onContextAction,
+            onMoveDestination: onMoveDestination
+        ))
+        .onTapGesture {
+            onSelect()
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                onZoomToggle()
+            }
+        )
+        .onHover { hovering in
+            withTransaction(Transaction(animation: nil)) {
+                isHovered = hovering
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .safeHelp(tab.title)
+    }
+
+    /// Whether this tab renders in the compact icon-only style reserved for pinned
+    /// browser surfaces (favicon only, no title or trailing affordances).
+    private var isIconOnlyPinned: Bool {
+        TabItemStyling.isIconOnlyPinned(isPinned: tab.isPinned, kind: tab.kind)
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        if isIconOnlyPinned {
+            iconOnlyContent
+        } else {
+            standardContent
+        }
+    }
+
+    /// Standard titled tab layout: leading icon, title, optional audio/zoom
+    /// affordances, and the trailing close/pin/dirty accessory.
+    @ViewBuilder
+    private var standardContent: some View {
         HStack(spacing: 0) {
             // Icon + title block uses the standard spacing, but keep the close affordance tight.
             HStack(spacing: scaledContentSpacing) {
-                let iconSlotSize = scaledIconSize
-                let iconTintColor = isSelected
-                    ? TabBarColors.nsColorActiveText(for: appearance)
-                    : TabBarColors.nsColorInactiveText(for: appearance)
-                let iconTint = Color(nsColor: iconTintColor)
-                let faviconImage = renderedFaviconImage ?? tab.iconImageData.flatMap { NSImage(data: $0) }
-
-                Group {
-                    if tab.isLoading {
-                        // Slightly smaller than the icon slot so it reads cleaner at tab scale.
-                        TabLoadingSpinner(size: iconSlotSize * 0.86, color: iconTintColor)
-                    } else if let image = faviconImage {
-                        FaviconIconView(image: image)
-                            .frame(width: iconSlotSize, height: iconSlotSize, alignment: .center)
-                            .clipped()
-                    } else if let iconName = tab.icon {
-                        if iconName == "globe", !showGlobeFallback {
-                            // Avoid a distracting "globe -> favicon" flash: show a neutral placeholder
-                            // briefly while the favicon fetch finishes. If no favicon arrives, we
-                            // reveal the globe after a short delay.
-                            RoundedRectangle(cornerRadius: 3)
-                                .stroke(iconTint.opacity(0.25), lineWidth: 1)
-                        } else {
-                            Image(systemName: iconName)
-                                .font(.system(size: glyphSize(for: iconName)))
-                                .foregroundStyle(iconTint)
-                        }
-                    }
-                }
-                // Keep downloaded favicon bitmaps in full color even for inactive tab bars.
-                .saturation(TabItemStyling.iconSaturation(hasRasterIcon: faviconImage != nil, tabSaturation: saturation))
-                .transaction { tx in
-                    // Prevent incidental parent animations from briefly fading icon content.
-                    tx.animation = nil
-                }
-                .frame(width: iconSlotSize, height: iconSlotSize, alignment: .center)
-                .onAppear {
-                    updateRenderedFaviconImage()
-                    updateGlobeFallback()
-                }
-                .onDisappear {
-                    globeFallbackWorkItem?.cancel()
-                    globeFallbackWorkItem = nil
-                }
-                .onChange(of: tab.isLoading) { _ in updateGlobeFallback() }
-                .onChange(of: tab.iconImageData) { _ in
-                    updateRenderedFaviconImage()
-                    updateGlobeFallback()
-                }
-                .onChange(of: tab.icon) { _ in updateGlobeFallback() }
+                leadingIcon
 
                 Text(tab.title)
                     .font(.system(size: appearance.tabTitleFontSize))
@@ -157,17 +342,53 @@ struct TabItemView: View {
                     )
                     .saturation(saturation)
 
-                if tab.isAudioMuted {
-                    Image(systemName: "speaker.slash")
-                        .font(.system(size: accessoryFontSize, weight: .semibold))
-                        .foregroundStyle(
-                            (isSelected
-                                ? TabBarColors.activeText(for: appearance)
-                                : TabBarColors.inactiveText(for: appearance))
-                                .opacity(0.78)
-                        )
-                        .saturation(saturation)
-                        .accessibilityHidden(true)
+                // Chrome/Safari-style audio affordance: a speaker glyph appears
+                // when the tab is producing audible audio (click to mute) or has
+                // been muted (click to unmute). Reuses the existing
+                // `.toggleAudioMute` context action so the host owns the mute
+                // route. Hidden when the tab is neither playing nor muted.
+                if tab.isAudioMuted || tab.isAudioPlaying {
+                    let isMuted = tab.isAudioMuted
+                    let audioLabel = Bundle.module.localizedString(
+                        forKey: isMuted ? "tabContext.unmuteTab" : "tabContext.muteTab",
+                        value: isMuted ? "Unmute Tab" : "Mute Tab",
+                        table: nil
+                    )
+                    Button {
+                        onContextAction(.toggleAudioMute)
+                    } label: {
+                        Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .font(.system(size: accessoryFontSize, weight: .semibold))
+                            .foregroundStyle(
+                                isAudioHovered
+                                    ? (isSelected
+                                        ? TabBarColors.activeText(for: appearance)
+                                        : TabBarColors.inactiveText(for: appearance))
+                                    : (isSelected
+                                        ? TabBarColors.activeText(for: appearance)
+                                        : TabBarColors.inactiveText(for: appearance))
+                                        .opacity(0.78)
+                            )
+                            .frame(width: accessorySlotSize, height: accessorySlotSize)
+                            .background(
+                                Circle()
+                                    .fill(
+                                        isAudioHovered
+                                            ? TabBarColors.hoveredTabBackground(for: appearance)
+                                            : .clear
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering in
+                        withTransaction(Transaction(animation: nil)) {
+                            isAudioHovered = hovering
+                        }
+                    }
+                    .saturation(saturation)
+                    .safeHelp(audioLabel)
+                    .accessibilityLabel(audioLabel)
+                    .tabBarButtonAnimationsDisabled()
                 }
 
                 if showsZoomIndicator {
@@ -203,54 +424,184 @@ struct TabItemView: View {
                 }
             }
 
-            Spacer(minLength: 0)
+            if fillsWidth {
+                // Fill mode stretches each tab to share the strip width, so a
+                // flexible spacer pushes the close button to the trailing edge.
+                Spacer(minLength: 0)
+            } else {
+                // Fixed mode hugs each tab to its content. A greedy spacer here
+                // would inflate the tab's ideal width so the `maxWidth` clamp
+                // resolves to the maximum, leaving a large empty gap on short
+                // titles (e.g. "~"). A fixed gap keeps the close button off the
+                // title while letting the tab size to its content.
+                Color.clear.frame(width: scaledContentSpacing)
+            }
 
             // Close button / dirty indicator / shortcut hint share the same trailing slot.
             trailingAccessory
         }
-        .padding(.horizontal, TabBarMetrics.tabHorizontalPadding)
-        .frame(
-            minWidth: tabWidthRange.lowerBound,
-            maxWidth: tabWidthRange.upperBound,
-            minHeight: tabHeight,
-            maxHeight: tabHeight
-        )
-        .background(tabBackground.saturation(saturation))
+    }
+
+    /// Compact pinned-browser layout: a centered favicon with a small status badge
+    /// overlay for audio/unread/dirty activity. The full title stays reachable via
+    /// the tab tooltip and accessibility label. When the tab-shortcut modifier is
+    /// held, the favicon crossfades to the modifier+number hint pill so number-based
+    /// selection stays discoverable (mirrors the standard layout's trailing slot).
+    @ViewBuilder
+    private var iconOnlyContent: some View {
+        ZStack {
+            leadingIcon
+                .overlay(alignment: .topTrailing) {
+                    pinnedActivityBadge
+                        .offset(x: 3, y: -2)
+                }
+                .opacity(showsShortcutHint ? 0 : 1)
+                // Suppress the audio badge's tap target while the hint pill is shown.
+                .allowsHitTesting(!showsShortcutHint)
+
+            if let shortcutHintLabel {
+                TabControlShortcutHintPill(text: shortcutHintLabel)
+                    .opacity(showsShortcutHint ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+        }
         .tabControlShortcutHintVisibilityAnimation(value: showsShortcutHint)
-        .contentShape(Rectangle().inset(by: -BonsplitTabItemHitTesting.horizontalSlop))
-        // Middle click to close (macOS convention).
-        // Uses an AppKit event monitor so it doesn't interfere with left click selection or drag/reorder.
-        .background(MiddleClickMonitorView(onMiddleClick: {
-            guard allowsClose, !tab.isPinned else { return }
-            onClose(.middleClick)
-        }))
-        .background(TabContextMenuPresenter(
-            snapshot: TabContextMenuSnapshot(
-                tabId: tab.id,
-                state: contextMenuState,
-                moveDestinationsProvider: moveDestinationsProvider
-            ),
-            onContextAction: onContextAction,
-            onMoveDestination: onMoveDestination
-        ))
-        .onTapGesture {
-            onSelect()
-        }
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded {
-                onZoomToggle()
+    }
+
+    /// Leading favicon / loading spinner / symbol icon. Shared by the standard and
+    /// icon-only layouts so favicon state handling stays in one place.
+    @ViewBuilder
+    private var leadingIcon: some View {
+        let iconSlotSize = scaledIconSize
+        let iconTintColor = isSelected
+            ? TabBarColors.nsColorActiveText(for: appearance)
+            : TabBarColors.nsColorInactiveText(for: appearance)
+        let iconTint = Color(nsColor: iconTintColor)
+        let faviconImage = renderedFaviconImage ?? tab.iconImageData.flatMap { NSImage(data: $0) }
+
+        Group {
+            if tab.isLoading {
+                // Slightly smaller than the icon slot so it reads cleaner at tab scale.
+                TabLoadingSpinner(size: iconSlotSize * 0.86, color: iconTintColor)
+            } else if let image = faviconImage {
+                FaviconIconView(image: image)
+                    .frame(width: iconSlotSize, height: iconSlotSize, alignment: .center)
+                    .clipped()
+            } else if let iconName = tab.icon {
+                if iconName == "globe", !showGlobeFallback {
+                    // Avoid a distracting "globe -> favicon" flash: show a neutral placeholder
+                    // briefly while the favicon fetch finishes. If no favicon arrives, we
+                    // reveal the globe after a short delay.
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(iconTint.opacity(0.25), lineWidth: 1)
+                } else {
+                    Image(systemName: iconName)
+                        .font(.system(size: glyphSize(for: iconName)))
+                        .foregroundStyle(iconTint)
+                }
             }
+        }
+        // Keep downloaded favicon bitmaps in full color even for inactive tab bars.
+        .saturation(TabItemStyling.iconSaturation(hasRasterIcon: faviconImage != nil, tabSaturation: saturation))
+        .transaction { tx in
+            // Prevent incidental parent animations from briefly fading icon content.
+            tx.animation = nil
+        }
+        .frame(width: iconSlotSize, height: iconSlotSize, alignment: .center)
+        .onAppear {
+            updateRenderedFaviconImage()
+            updateGlobeFallback()
+        }
+        .onDisappear {
+            globeFallbackWorkItem?.cancel()
+            globeFallbackWorkItem = nil
+        }
+        .onChange(of: tab.isLoading) { _ in updateGlobeFallback() }
+        .onChange(of: tab.iconImageData) { _ in
+            updateRenderedFaviconImage()
+            updateGlobeFallback()
+        }
+        .onChange(of: tab.icon) { _ in updateGlobeFallback() }
+    }
+
+    /// Small corner badge for icon-only pinned tabs, preserving the audio/unread/
+    /// dirty signals that the collapsed layout otherwise hides. A single slot keeps
+    /// the chip uncluttered: audio takes priority, then unread, then dirty. The audio
+    /// badge stays click-to-mute (same `.toggleAudioMute` route as the standard
+    /// layout); the unread/dirty dots are non-interactive indicators.
+    @ViewBuilder
+    private var pinnedActivityBadge: some View {
+        if !tab.isLoading {
+            if tab.isAudioMuted || tab.isAudioPlaying {
+                let isMuted = tab.isAudioMuted
+                let audioLabel = Bundle.module.localizedString(
+                    forKey: isMuted ? "tabContext.unmuteTab" : "tabContext.muteTab",
+                    value: isMuted ? "Unmute Tab" : "Mute Tab",
+                    table: nil
+                )
+                Button {
+                    onContextAction(.toggleAudioMute)
+                } label: {
+                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: max(6, accessoryFontSize - 4), weight: .semibold))
+                        .foregroundStyle(
+                            isSelected
+                                ? TabBarColors.activeText(for: appearance)
+                                : TabBarColors.inactiveText(for: appearance)
+                        )
+                        .padding(2)
+                        .background(
+                            Circle().fill(TabBarColors.activeTabBackground(for: appearance))
+                        )
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .saturation(saturation)
+                .safeHelp(audioLabel)
+                .accessibilityLabel(audioLabel)
+                .tabBarButtonAnimationsDisabled()
+            } else if tab.showsNotificationBadge {
+                Circle()
+                    .fill(TabBarColors.notificationBadge(for: appearance))
+                    .frame(width: TabBarMetrics.notificationBadgeSize, height: TabBarMetrics.notificationBadgeSize)
+                    .allowsHitTesting(false)
+            } else if tab.isDirty {
+                Circle()
+                    .fill(TabBarColors.dirtyIndicator(for: appearance))
+                    .frame(width: TabBarMetrics.dirtyIndicatorSize, height: TabBarMetrics.dirtyIndicatorSize)
+                    .saturation(saturation)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Lower width bound: a compact icon-only width for pinned browser tabs,
+    /// otherwise the standard minimum visual width.
+    private var frameMinWidth: CGFloat {
+        isIconOnlyPinned ? pinnedIconOnlyWidth : tabWidthRange.lowerBound
+    }
+
+    /// Upper width bound: pinned browser tabs are pinned to the compact width;
+    /// fill mode stays flexible; fixed mode clamps to the configured maximum.
+    private var frameMaxWidth: CGFloat {
+        if isIconOnlyPinned { return pinnedIconOnlyWidth }
+        return fillsWidth ? .infinity : tabWidthRange.upperBound
+    }
+
+    /// Fixed compact width used for icon-only pinned browser tabs. When the tab can
+    /// show a control-shortcut hint, the width also reserves room for the hint pill so
+    /// holding the modifier never changes the tab's width (avoids tab-bar layout shift,
+    /// mirroring the standard layout's always-reserved hint slot).
+    private var pinnedIconOnlyWidth: CGFloat {
+        let reservedHint: CGFloat? = {
+            guard allowsShortcutHints, let shortcutHintLabel else { return nil }
+            return TabItemStyling.shortcutHintWidth(for: shortcutHintLabel)
+        }()
+        return TabItemStyling.pinnedIconOnlyWidth(
+            iconSlotSize: scaledIconSize,
+            horizontalPadding: TabBarMetrics.tabHorizontalPadding,
+            reservedShortcutHintWidth: reservedHint
         )
-        .onHover { hovering in
-            withTransaction(Transaction(animation: nil)) {
-                isHovered = hovering
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(tab.title)
-        .accessibilityValue(accessibilityValue)
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-        .safeHelp(tab.title)
     }
 
     /// Scale factor of the configured tab title font relative to the default.
@@ -291,6 +642,12 @@ struct TabItemView: View {
         return "\(shortcutModifierSymbol)\(controlShortcutDigit)"
     }
 
+    /// Hints are only ever shown on the focused pane; gating on focus here keeps
+    /// hint visibility scoped to the focused pane while leaving width untouched.
+    private var allowsShortcutHints: Bool {
+        isFocused && tabShortcutHintsEnabled
+    }
+
     private var showsShortcutHint: Bool {
         allowsShortcutHints && (showsControlShortcutHint || alwaysShowShortcutHints) && shortcutHintLabel != nil
     }
@@ -300,11 +657,17 @@ struct TabItemView: View {
     }
 
     private var shortcutHintSlotWidth: CGFloat {
-        guard let label = shortcutHintLabel else {
-            return accessorySlotSize
-        }
-        let positiveDebugInset = max(0, CGFloat(TabControlShortcutHintDebugSettings.clamped(controlShortcutHintXOffset))) + 2
-        return max(accessorySlotSize, shortcutHintWidth(for: label) + positiveDebugInset)
+        // Reserve the wider shortcut-hint width whenever hints are enabled and
+        // this tab has a digit, regardless of focus or modifier-hold. Both focus
+        // and modifier-hold change the pill's opacity, not the measured width, so
+        // the tab bar never shifts when a pane is focused or ⌃/⌘ is held.
+        TabItemStyling.reservedShortcutHintSlotWidth(
+            shortcutHintLabel: shortcutHintLabel,
+            tabShortcutHintsEnabled: tabShortcutHintsEnabled,
+            isFocused: isFocused,
+            accessorySlotSize: accessorySlotSize,
+            xOffset: controlShortcutHintXOffset
+        )
     }
 
     private var accessoryFontSize: CGFloat {
@@ -320,37 +683,11 @@ struct TabItemView: View {
         max(1, appearance.tabBarHeight)
     }
 
-    private func shortcutHintWidth(for label: String) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: accessoryFontSize, weight: .semibold)
-        let textWidth = (label as NSString).size(withAttributes: [.font: font]).width
-        return ceil(textWidth) + 8
-    }
-
     @ViewBuilder
     private var trailingAccessory: some View {
         ZStack(alignment: .center) {
             if let shortcutHintLabel {
-                Text(shortcutHintLabel)
-                    .font(.system(size: accessoryFontSize, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(
-                        isSelected
-                            ? TabBarColors.activeText(for: appearance)
-                            : TabBarColors.inactiveText(for: appearance)
-                    )
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(.regularMaterial)
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .stroke(Color.white.opacity(0.30), lineWidth: 0.8)
-                            )
-                            .shadow(color: Color.black.opacity(0.22), radius: 2, x: 0, y: 1)
-                    )
+                TabControlShortcutHintPill(text: shortcutHintLabel)
                     .offset(
                         x: TabControlShortcutHintDebugSettings.clamped(controlShortcutHintXOffset),
                         y: TabControlShortcutHintDebugSettings.clamped(controlShortcutHintYOffset)
@@ -777,6 +1114,7 @@ struct TabContextMenuSnapshot {
     let tabId: UUID
     let state: TabContextMenuState
     let moveDestinationsProvider: () -> [TabContextMoveDestination]
+    let forkConversationOpenAvailabilityProvider: () -> Bool?
 }
 
 final class TabContextMenuActionTarget: NSObject {
@@ -802,7 +1140,10 @@ enum TabContextMenuBuilder {
         snapshot: TabContextMenuSnapshot,
         target: TabContextMenuActionTarget
     ) -> NSMenu {
-        let state = snapshot.state
+        var state = snapshot.state
+        let canForkConversationAtOpen = snapshot.forkConversationOpenAvailabilityProvider()
+        let forkConversationEnabled = canForkConversationAtOpen ?? state.canForkConversation
+        state.canForkConversation = state.canForkConversation || forkConversationEnabled
         let menu = NSMenu()
         menu.autoenablesItems = false
 
@@ -877,11 +1218,16 @@ enum TabContextMenuBuilder {
             addAction(
                 title: localized("tabContext.forkConversation", defaultValue: "Fork Conversation"),
                 action: .forkConversation,
+                enabled: forkConversationEnabled,
                 state: state,
                 target: target,
                 to: menu
             )
-            menu.addItem(forkConversationSubmenuItem(state: state, target: target))
+            menu.addItem(forkConversationSubmenuItem(
+                state: state,
+                target: target,
+                enabled: forkConversationEnabled
+            ))
         }
 
         menu.addItem(.separator())
@@ -1024,7 +1370,8 @@ enum TabContextMenuBuilder {
 
     private static func forkConversationSubmenuItem(
         state: TabContextMenuState,
-        target: TabContextMenuActionTarget
+        target: TabContextMenuActionTarget,
+        enabled: Bool
     ) -> NSMenuItem {
         let item = NSMenuItem(
             title: localized("tabContext.forkConversationTo", defaultValue: "Fork Conversation To"),
@@ -1040,6 +1387,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.right", defaultValue: "Right Split"),
             action: .forkConversationRight,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1048,6 +1396,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.left", defaultValue: "Left Split"),
             action: .forkConversationLeft,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1056,6 +1405,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.top", defaultValue: "Top Split"),
             action: .forkConversationTop,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1064,6 +1414,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.bottom", defaultValue: "Bottom Split"),
             action: .forkConversationBottom,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1073,6 +1424,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.newTab", defaultValue: "New Tab"),
             action: .forkConversationNewTab,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1081,6 +1433,7 @@ enum TabContextMenuBuilder {
         addAction(
             title: localized("tabContext.forkConversation.newWorkspace", defaultValue: "New Workspace"),
             action: .forkConversationNewWorkspace,
+            enabled: enabled,
             state: state,
             target: target,
             to: submenu,
@@ -1088,7 +1441,7 @@ enum TabContextMenuBuilder {
         )
 
         item.submenu = submenu
-        item.isEnabled = true
+        item.isEnabled = enabled
         return item
     }
 

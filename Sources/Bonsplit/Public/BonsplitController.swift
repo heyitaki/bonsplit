@@ -82,6 +82,9 @@ public final class BonsplitController {
     /// session). Return `true` to enable the item, `false` (or omit the provider) to hide it.
     @ObservationIgnored public var tabContextForkConversationAvailabilityProvider: ((TabID, PaneID) -> Bool)?
 
+    /// Host-provided check evaluated only when the tab context menu is opening.
+    @ObservationIgnored public var tabContextForkConversationOpenAvailabilityProvider: ((TabID, PaneID) -> Bool)?
+
     /// Host-provided default destination for the tab context menu's primary "Fork
     /// Conversation" action. Return a destination-specific fork action; invalid values
     /// fall back to `.forkConversationRight`.
@@ -134,6 +137,7 @@ public final class BonsplitController {
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isAudioMuted: Bool = false,
+        isAudioPlaying: Bool = false,
         isPinned: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
@@ -149,6 +153,7 @@ public final class BonsplitController {
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
+            isAudioPlaying: isAudioPlaying,
             isPinned: isPinned
         )
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
@@ -187,6 +192,7 @@ public final class BonsplitController {
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
+            isAudioPlaying: isAudioPlaying,
             isPinned: isPinned
         )
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
@@ -232,6 +238,7 @@ public final class BonsplitController {
     ///   - showsNotificationBadge: New badge state (pass nil to keep current)
     ///   - isLoading: New loading/busy state (pass nil to keep current)
     ///   - isAudioMuted: New browser-audio mute state (pass nil to keep current)
+    ///   - isAudioPlaying: New audible-audio state (pass nil to keep current)
     ///   - isPinned: New pinned state (pass nil to keep current)
     public func updateTab(
         _ tabId: TabID,
@@ -244,6 +251,7 @@ public final class BonsplitController {
         showsNotificationBadge: Bool? = nil,
         isLoading: Bool? = nil,
         isAudioMuted: Bool? = nil,
+        isAudioPlaying: Bool? = nil,
         isPinned: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
@@ -274,6 +282,9 @@ public final class BonsplitController {
         }
         if let isAudioMuted = isAudioMuted {
             pane.tabs[tabIndex].isAudioMuted = isAudioMuted
+        }
+        if let isAudioPlaying = isAudioPlaying {
+            pane.tabs[tabIndex].isAudioPlaying = isAudioPlaying
         }
         if let isPinned = isPinned {
             pane.tabs[tabIndex].isPinned = isPinned
@@ -442,6 +453,7 @@ public final class BonsplitController {
                 showsNotificationBadge: tab.showsNotificationBadge,
                 isLoading: tab.isLoading,
                 isAudioMuted: tab.isAudioMuted,
+                isAudioPlaying: tab.isAudioPlaying,
                 isPinned: tab.isPinned
             )
         } else {
@@ -507,6 +519,7 @@ public final class BonsplitController {
             showsNotificationBadge: tab.showsNotificationBadge,
             isLoading: tab.isLoading,
             isAudioMuted: tab.isAudioMuted,
+            isAudioPlaying: tab.isAudioPlaying,
             isPinned: tab.isPinned
         )
 
