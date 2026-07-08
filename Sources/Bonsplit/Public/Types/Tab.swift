@@ -17,8 +17,13 @@ public struct Tab: Identifiable, Hashable, Sendable {
     public let isLoading: Bool
     /// Whether the tab should show browser audio as muted.
     public let isAudioMuted: Bool
+    /// Whether the tab is actively producing audible audio (for example, a
+    /// browser page playing sound). Drives a click-to-mute speaker affordance.
+    public let isAudioPlaying: Bool
     /// Whether the tab is pinned in its pane.
     public let isPinned: Bool
+    /// Whether the tab should show a remote-connection indicator (library consumer-defined meaning, e.g. SSH).
+    public let showsRemoteIndicator: Bool
 
     public init(
         id: TabID = TabID(),
@@ -31,7 +36,9 @@ public struct Tab: Identifiable, Hashable, Sendable {
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isAudioMuted: Bool = false,
-        isPinned: Bool = false
+        isAudioPlaying: Bool = false,
+        isPinned: Bool = false,
+        showsRemoteIndicator: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -43,7 +50,9 @@ public struct Tab: Identifiable, Hashable, Sendable {
         self.showsNotificationBadge = showsNotificationBadge
         self.isLoading = isLoading
         self.isAudioMuted = isAudioMuted
+        self.isAudioPlaying = isAudioPlaying
         self.isPinned = isPinned
+        self.showsRemoteIndicator = showsRemoteIndicator
     }
 
     internal init(from tabItem: TabItem) {
@@ -57,6 +66,8 @@ public struct Tab: Identifiable, Hashable, Sendable {
         self.showsNotificationBadge = tabItem.showsNotificationBadge
         self.isLoading = tabItem.isLoading
         self.isAudioMuted = tabItem.isAudioMuted
+        self.isAudioPlaying = tabItem.isAudioPlaying
         self.isPinned = tabItem.isPinned
+        self.showsRemoteIndicator = tabItem.showsRemoteIndicator
     }
 }

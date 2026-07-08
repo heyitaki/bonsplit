@@ -82,10 +82,19 @@ public final class BonsplitController {
     /// session). Return `true` to enable the item, `false` (or omit the provider) to hide it.
     @ObservationIgnored public var tabContextForkConversationAvailabilityProvider: ((TabID, PaneID) -> Bool)?
 
+    /// Host-provided check evaluated only when the tab context menu is opening.
+    @ObservationIgnored public var tabContextForkConversationOpenAvailabilityProvider: ((TabID, PaneID) -> Bool)?
+
     /// Host-provided default destination for the tab context menu's primary "Fork
     /// Conversation" action. Return a destination-specific fork action; invalid values
     /// fall back to `.forkConversationRight`.
     @ObservationIgnored public var tabContextForkConversationDefaultActionProvider: ((TabID, PaneID) -> TabContextAction)?
+
+    /// Host-provided synchronous check that decides whether the tab context menu should
+    /// surface a "Disconnect SSH" action for the tab (e.g. a terminal surface attached to
+    /// a host-managed remote connection). Return `true` to show the item, `false` (or omit
+    /// the provider) to hide it.
+    @ObservationIgnored public var tabContextDisconnectRemoteAvailabilityProvider: ((TabID, PaneID) -> Bool)?
 
     /// Called when the user explicitly requests to close a tab from the tab strip UI.
     /// Internal host-driven closes should not use this hook.
@@ -94,6 +103,10 @@ public final class BonsplitController {
     /// Called when the user explicitly requests to toggle zoom from tab chrome.
     /// When set, the host owns the full toggle and should return whether it succeeded.
     @ObservationIgnored public var onTabZoomToggleRequest: (@MainActor (_ tabId: TabID, _ paneId: PaneID) -> Bool)?
+
+    /// Called when the user explicitly requests to toggle full-width-tab mode from tab chrome.
+    /// When set, the host owns the full toggle and should return whether it succeeded.
+    @ObservationIgnored public var onTabFullWidthToggleRequest: (@MainActor (_ tabId: TabID, _ paneId: PaneID) -> Bool)?
 
     // MARK: - Internal State
 
@@ -134,7 +147,9 @@ public final class BonsplitController {
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isAudioMuted: Bool = false,
+        isAudioPlaying: Bool = false,
         isPinned: Bool = false,
+        showsRemoteIndicator: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
         let tabId = TabID()
@@ -149,7 +164,9 @@ public final class BonsplitController {
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
-            isPinned: isPinned
+            isAudioPlaying: isAudioPlaying,
+            isPinned: isPinned,
+            showsRemoteIndicator: showsRemoteIndicator
         )
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
 
@@ -187,7 +204,9 @@ public final class BonsplitController {
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
-            isPinned: isPinned
+            isAudioPlaying: isAudioPlaying,
+            isPinned: isPinned,
+            showsRemoteIndicator: showsRemoteIndicator
         )
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
 
@@ -210,6 +229,11 @@ public final class BonsplitController {
 
     /// Request the delegate to handle a tab context-menu action.
     public func requestTabContextAction(_ action: TabContextAction, for tabId: TabID, inPane pane: PaneID) {
+        if action == .toggleFullWidthTab {
+            _ = requestTabFullWidthToggle(for: tabId, inPane: pane)
+            return
+        }
+
         guard let tab = tab(tabId) else { return }
         delegate?.splitTabBar(self, didRequestTabContextAction: action, for: tab, inPane: pane)
     }
@@ -232,6 +256,7 @@ public final class BonsplitController {
     ///   - showsNotificationBadge: New badge state (pass nil to keep current)
     ///   - isLoading: New loading/busy state (pass nil to keep current)
     ///   - isAudioMuted: New browser-audio mute state (pass nil to keep current)
+    ///   - isAudioPlaying: New audible-audio state (pass nil to keep current)
     ///   - isPinned: New pinned state (pass nil to keep current)
     public func updateTab(
         _ tabId: TabID,
@@ -244,9 +269,26 @@ public final class BonsplitController {
         showsNotificationBadge: Bool? = nil,
         isLoading: Bool? = nil,
         isAudioMuted: Bool? = nil,
-        isPinned: Bool? = nil
+        isAudioPlaying: Bool? = nil,
+        isPinned: Bool? = nil,
+        showsRemoteIndicator: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
+        let currentTab = pane.tabs[tabIndex]
+        let didChange =
+            title.map { currentTab.title != $0 } ?? false ||
+            icon.map { currentTab.icon != $0 } ?? false ||
+            iconImageData.map { currentTab.iconImageData != $0 } ?? false ||
+            kind.map { currentTab.kind != $0 } ?? false ||
+            hasCustomTitle.map { currentTab.hasCustomTitle != $0 } ?? false ||
+            isDirty.map { currentTab.isDirty != $0 } ?? false ||
+            showsNotificationBadge.map { currentTab.showsNotificationBadge != $0 } ?? false ||
+            isLoading.map { currentTab.isLoading != $0 } ?? false ||
+            isAudioMuted.map { currentTab.isAudioMuted != $0 } ?? false ||
+            isAudioPlaying.map { currentTab.isAudioPlaying != $0 } ?? false ||
+            isPinned.map { currentTab.isPinned != $0 } ?? false ||
+            showsRemoteIndicator.map { currentTab.showsRemoteIndicator != $0 } ?? false
+        guard didChange else { return }
 
         if let title = title {
             pane.tabs[tabIndex].title = title
@@ -275,8 +317,14 @@ public final class BonsplitController {
         if let isAudioMuted = isAudioMuted {
             pane.tabs[tabIndex].isAudioMuted = isAudioMuted
         }
+        if let isAudioPlaying = isAudioPlaying {
+            pane.tabs[tabIndex].isAudioPlaying = isAudioPlaying
+        }
         if let isPinned = isPinned {
             pane.tabs[tabIndex].isPinned = isPinned
+        }
+        if let showsRemoteIndicator = showsRemoteIndicator {
+            pane.tabs[tabIndex].showsRemoteIndicator = showsRemoteIndicator
         }
     }
 
@@ -442,7 +490,9 @@ public final class BonsplitController {
                 showsNotificationBadge: tab.showsNotificationBadge,
                 isLoading: tab.isLoading,
                 isAudioMuted: tab.isAudioMuted,
-                isPinned: tab.isPinned
+                isAudioPlaying: tab.isAudioPlaying,
+                isPinned: tab.isPinned,
+                showsRemoteIndicator: tab.showsRemoteIndicator
             )
         } else {
             internalTab = nil
@@ -507,7 +557,9 @@ public final class BonsplitController {
             showsNotificationBadge: tab.showsNotificationBadge,
             isLoading: tab.isLoading,
             isAudioMuted: tab.isAudioMuted,
-            isPinned: tab.isPinned
+            isAudioPlaying: tab.isAudioPlaying,
+            isPinned: tab.isPinned,
+            showsRemoteIndicator: tab.showsRemoteIndicator
         )
 
         // Perform split with insertion side.
@@ -682,6 +734,61 @@ public final class BonsplitController {
             return onTabZoomToggleRequest(tabId, paneId)
         }
         return togglePaneZoom(inPane: paneId)
+    }
+
+    // MARK: - Full Width Tab Mode
+
+    /// Pane IDs whose tab chrome is currently rendered in full-width-tab mode.
+    public var fullWidthTabModePaneIds: [PaneID] {
+        internalController.rootNode.allPanes
+            .filter(\.isFullWidthTabMode)
+            .map(\.id)
+    }
+
+    /// Set full-width-tab mode for a pane.
+    ///
+    /// - Parameters:
+    ///   - enabled: Whether the pane should render the selected tab as a full-width title header.
+    ///   - pane: The pane to update.
+    /// - Returns: `true` when the pane exists and was updated; otherwise `false`.
+    @discardableResult
+    public func setFullWidthTabMode(_ enabled: Bool, inPane pane: PaneID) -> Bool {
+        guard let paneState = internalController.rootNode.findPane(pane) else { return false }
+        paneState.isFullWidthTabMode = enabled
+        return true
+    }
+
+    /// Return whether a pane is currently in full-width-tab mode.
+    ///
+    /// Unknown panes are treated as off and return `false`.
+    public func isFullWidthTabMode(inPane pane: PaneID) -> Bool {
+        internalController.rootNode.findPane(pane)?.isFullWidthTabMode ?? false
+    }
+
+    /// Toggle full-width-tab mode for a pane.
+    ///
+    /// - Parameter pane: The pane to toggle.
+    /// - Returns: The new mode state when the pane exists. Returns `false` without mutating state when the pane is unknown.
+    @discardableResult
+    public func toggleFullWidthTabMode(inPane pane: PaneID) -> Bool {
+        guard let paneState = internalController.rootNode.findPane(pane) else { return false }
+        paneState.isFullWidthTabMode.toggle()
+        return paneState.isFullWidthTabMode
+    }
+
+    /// Request a tab-chrome full-width-tab toggle for a specific tab.
+    /// Hosts can intercept this to run their own focus/layout reconciliation.
+    @discardableResult
+    public func requestTabFullWidthToggle(for tabId: TabID, inPane paneId: PaneID) -> Bool {
+        guard let (pane, _) = findTabInternal(tabId),
+              pane.id == paneId else { return false }
+        if pane.selectedTabId != tabId.id {
+            selectTab(tabId)
+        }
+        if let onTabFullWidthToggleRequest {
+            return onTabFullWidthToggleRequest(tabId, paneId)
+        }
+        return toggleFullWidthTabMode(inPane: paneId)
     }
 
     // MARK: - Context Menu Shortcut Hints

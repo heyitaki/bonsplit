@@ -25,7 +25,11 @@ struct TabItem: Identifiable, Hashable, Codable {
     var showsNotificationBadge: Bool
     var isLoading: Bool
     var isAudioMuted: Bool
+    /// Whether the tab is actively producing audible audio (library
+    /// consumer-defined meaning, e.g. a browser page playing sound).
+    var isAudioPlaying: Bool
     var isPinned: Bool
+    var showsRemoteIndicator: Bool
 
     init(
         id: UUID = UUID(),
@@ -38,7 +42,9 @@ struct TabItem: Identifiable, Hashable, Codable {
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isAudioMuted: Bool = false,
-        isPinned: Bool = false
+        isAudioPlaying: Bool = false,
+        isPinned: Bool = false,
+        showsRemoteIndicator: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -50,7 +56,9 @@ struct TabItem: Identifiable, Hashable, Codable {
         self.showsNotificationBadge = showsNotificationBadge
         self.isLoading = isLoading
         self.isAudioMuted = isAudioMuted
+        self.isAudioPlaying = isAudioPlaying
         self.isPinned = isPinned
+        self.showsRemoteIndicator = showsRemoteIndicator
     }
 
     func hash(into hasher: inout Hasher) {
@@ -72,7 +80,9 @@ struct TabItem: Identifiable, Hashable, Codable {
         case showsNotificationBadge
         case isLoading
         case isAudioMuted
+        case isAudioPlaying
         case isPinned
+        case showsRemoteIndicator
     }
 
     init(from decoder: Decoder) throws {
@@ -87,7 +97,9 @@ struct TabItem: Identifiable, Hashable, Codable {
         self.showsNotificationBadge = try c.decodeIfPresent(Bool.self, forKey: .showsNotificationBadge) ?? false
         self.isLoading = try c.decodeIfPresent(Bool.self, forKey: .isLoading) ?? false
         self.isAudioMuted = try c.decodeIfPresent(Bool.self, forKey: .isAudioMuted) ?? false
+        self.isAudioPlaying = try c.decodeIfPresent(Bool.self, forKey: .isAudioPlaying) ?? false
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        self.showsRemoteIndicator = try c.decodeIfPresent(Bool.self, forKey: .showsRemoteIndicator) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -102,7 +114,9 @@ struct TabItem: Identifiable, Hashable, Codable {
         try c.encode(showsNotificationBadge, forKey: .showsNotificationBadge)
         try c.encode(isLoading, forKey: .isLoading)
         try c.encode(isAudioMuted, forKey: .isAudioMuted)
+        try c.encode(isAudioPlaying, forKey: .isAudioPlaying)
         try c.encode(isPinned, forKey: .isPinned)
+        try c.encode(showsRemoteIndicator, forKey: .showsRemoteIndicator)
     }
 }
 
