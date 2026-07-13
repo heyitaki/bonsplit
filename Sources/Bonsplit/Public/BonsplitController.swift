@@ -82,10 +82,19 @@ public final class BonsplitController {
     /// session). Return `true` to enable the item, `false` (or omit the provider) to hide it.
     @ObservationIgnored public var tabContextForkConversationAvailabilityProvider: ((TabID, PaneID) -> Bool)?
 
+    /// Host-provided check evaluated only when the tab context menu is opening.
+    @ObservationIgnored public var tabContextForkConversationOpenAvailabilityProvider: ((TabID, PaneID) -> Bool)?
+
     /// Host-provided default destination for the tab context menu's primary "Fork
     /// Conversation" action. Return a destination-specific fork action; invalid values
     /// fall back to `.forkConversationRight`.
     @ObservationIgnored public var tabContextForkConversationDefaultActionProvider: ((TabID, PaneID) -> TabContextAction)?
+
+    /// Host-provided synchronous check that decides whether the tab context menu should
+    /// surface a "Disconnect SSH" action for the tab (e.g. a terminal surface attached to
+    /// a host-managed remote connection). Return `true` to show the item, `false` (or omit
+    /// the provider) to hide it.
+    @ObservationIgnored public var tabContextDisconnectRemoteAvailabilityProvider: ((TabID, PaneID) -> Bool)?
 
     /// Called when the user explicitly requests to close a tab from the tab strip UI.
     /// Internal host-driven closes should not use this hook.
@@ -94,6 +103,10 @@ public final class BonsplitController {
     /// Called when the user explicitly requests to toggle zoom from tab chrome.
     /// When set, the host owns the full toggle and should return whether it succeeded.
     @ObservationIgnored public var onTabZoomToggleRequest: (@MainActor (_ tabId: TabID, _ paneId: PaneID) -> Bool)?
+
+    /// Called when the user explicitly requests to toggle full-width-tab mode from tab chrome.
+    /// When set, the host owns the full toggle and should return whether it succeeded.
+    @ObservationIgnored public var onTabFullWidthToggleRequest: (@MainActor (_ tabId: TabID, _ paneId: PaneID) -> Bool)?
 
     // MARK: - Internal State
 
@@ -105,6 +118,7 @@ public final class BonsplitController {
     public init(configuration: BonsplitConfiguration = .default) {
         self.configuration = configuration
         self.internalController = SplitViewController()
+        internalController.publicController = self
     }
 
     // MARK: - Tab Operations
@@ -114,6 +128,7 @@ public final class BonsplitController {
     ///   - title: The tab title
     ///   - icon: Optional SF Symbol name for the tab icon
     ///   - iconImageData: Optional image data (PNG recommended) for the tab icon. When present, takes precedence over `icon`.
+    ///   - iconAsset: Optional asset-catalog image name for the tab icon. Resolved in the host app bundle.
     ///   - kind: Consumer-defined tab kind identifier (e.g. "terminal", "browser")
     ///   - hasCustomTitle: Whether the tab title came from a custom user override
     ///   - isDirty: Whether the tab shows a dirty indicator
@@ -129,12 +144,15 @@ public final class BonsplitController {
         hasCustomTitle: Bool = false,
         icon: String? = "doc.text",
         iconImageData: Data? = nil,
+        iconAsset: String? = nil,
         kind: String? = nil,
         isDirty: Bool = false,
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isAudioMuted: Bool = false,
+        isAudioPlaying: Bool = false,
         isPinned: Bool = false,
+        showsRemoteIndicator: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
         let tabId = TabID()
@@ -144,12 +162,15 @@ public final class BonsplitController {
             hasCustomTitle: hasCustomTitle,
             icon: icon,
             iconImageData: iconImageData,
+            iconAsset: iconAsset,
             kind: kind,
             isDirty: isDirty,
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
-            isPinned: isPinned
+            isAudioPlaying: isAudioPlaying,
+            isPinned: isPinned,
+            showsRemoteIndicator: showsRemoteIndicator
         )
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
 
@@ -163,7 +184,7 @@ public final class BonsplitController {
         switch configuration.newTabPosition {
         case .current:
             // Insert after the currently selected tab
-            if let paneState = internalController.rootNode.findPane(PaneID(id: targetPane.id)),
+            if let paneState = internalController.paneState(for: targetPane),
                let selectedTabId = paneState.selectedTabId,
                let currentIndex = paneState.tabs.firstIndex(where: { $0.id == selectedTabId }) {
                 insertIndex = currentIndex + 1
@@ -182,12 +203,15 @@ public final class BonsplitController {
             hasCustomTitle: hasCustomTitle,
             icon: icon,
             iconImageData: iconImageData,
+            iconAsset: iconAsset,
             kind: kind,
             isDirty: isDirty,
             showsNotificationBadge: showsNotificationBadge,
             isLoading: isLoading,
             isAudioMuted: isAudioMuted,
-            isPinned: isPinned
+            isAudioPlaying: isAudioPlaying,
+            isPinned: isPinned,
+            showsRemoteIndicator: showsRemoteIndicator
         )
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
 
@@ -210,6 +234,11 @@ public final class BonsplitController {
 
     /// Request the delegate to handle a tab context-menu action.
     public func requestTabContextAction(_ action: TabContextAction, for tabId: TabID, inPane pane: PaneID) {
+        if action == .toggleFullWidthTab {
+            _ = requestTabFullWidthToggle(for: tabId, inPane: pane)
+            return
+        }
+
         guard let tab = tab(tabId) else { return }
         delegate?.splitTabBar(self, didRequestTabContextAction: action, for: tab, inPane: pane)
     }
@@ -226,27 +255,48 @@ public final class BonsplitController {
     ///   - title: New title (pass nil to keep current)
     ///   - icon: New icon (pass nil to keep current, pass .some(nil) to remove icon)
     ///   - iconImageData: New icon image data (pass nil to keep current, pass .some(nil) to remove)
+    ///   - iconAsset: New asset-catalog icon name (pass nil to keep current, pass .some(nil) to remove)
     ///   - kind: New tab kind (pass nil to keep current, pass .some(nil) to clear)
     ///   - hasCustomTitle: New custom-title state (pass nil to keep current)
     ///   - isDirty: New dirty state (pass nil to keep current)
     ///   - showsNotificationBadge: New badge state (pass nil to keep current)
     ///   - isLoading: New loading/busy state (pass nil to keep current)
     ///   - isAudioMuted: New browser-audio mute state (pass nil to keep current)
+    ///   - isAudioPlaying: New audible-audio state (pass nil to keep current)
     ///   - isPinned: New pinned state (pass nil to keep current)
     public func updateTab(
         _ tabId: TabID,
         title: String? = nil,
         icon: String?? = nil,
         iconImageData: Data?? = nil,
+        iconAsset: String?? = nil,
         kind: String?? = nil,
         hasCustomTitle: Bool? = nil,
         isDirty: Bool? = nil,
         showsNotificationBadge: Bool? = nil,
         isLoading: Bool? = nil,
         isAudioMuted: Bool? = nil,
-        isPinned: Bool? = nil
+        isAudioPlaying: Bool? = nil,
+        isPinned: Bool? = nil,
+        showsRemoteIndicator: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
+        let currentTab = pane.tabs[tabIndex]
+        let didChange =
+            title.map { currentTab.title != $0 } ?? false ||
+            icon.map { currentTab.icon != $0 } ?? false ||
+            iconImageData.map { currentTab.iconImageData != $0 } ?? false ||
+            iconAsset.map { currentTab.iconAsset != $0 } ?? false ||
+            kind.map { currentTab.kind != $0 } ?? false ||
+            hasCustomTitle.map { currentTab.hasCustomTitle != $0 } ?? false ||
+            isDirty.map { currentTab.isDirty != $0 } ?? false ||
+            showsNotificationBadge.map { currentTab.showsNotificationBadge != $0 } ?? false ||
+            isLoading.map { currentTab.isLoading != $0 } ?? false ||
+            isAudioMuted.map { currentTab.isAudioMuted != $0 } ?? false ||
+            isAudioPlaying.map { currentTab.isAudioPlaying != $0 } ?? false ||
+            isPinned.map { currentTab.isPinned != $0 } ?? false ||
+            showsRemoteIndicator.map { currentTab.showsRemoteIndicator != $0 } ?? false
+        guard didChange else { return }
 
         if let title = title {
             pane.tabs[tabIndex].title = title
@@ -256,6 +306,9 @@ public final class BonsplitController {
         }
         if let iconImageData = iconImageData {
             pane.tabs[tabIndex].iconImageData = iconImageData
+        }
+        if let iconAsset = iconAsset {
+            pane.tabs[tabIndex].iconAsset = iconAsset
         }
         if let kind = kind {
             pane.tabs[tabIndex].kind = kind
@@ -275,8 +328,14 @@ public final class BonsplitController {
         if let isAudioMuted = isAudioMuted {
             pane.tabs[tabIndex].isAudioMuted = isAudioMuted
         }
+        if let isAudioPlaying = isAudioPlaying {
+            pane.tabs[tabIndex].isAudioPlaying = isAudioPlaying
+        }
         if let isPinned = isPinned {
             pane.tabs[tabIndex].isPinned = isPinned
+        }
+        if let showsRemoteIndicator = showsRemoteIndicator {
+            pane.tabs[tabIndex].showsRemoteIndicator = showsRemoteIndicator
         }
     }
 
@@ -293,7 +352,7 @@ public final class BonsplitController {
     /// - Parameter tabId: The tab to close
     /// - Parameter paneId: The pane in which to close the tab
     public func closeTab(_ tabId: TabID, inPane paneId: PaneID) -> Bool {
-        guard let pane = internalController.rootNode.findPane(paneId),
+        guard let pane = internalController.paneState(for: paneId),
               let tabIndex = pane.tabs.firstIndex(where: { $0.id == tabId.id }) else {
             return false
         }
@@ -346,13 +405,14 @@ public final class BonsplitController {
     @discardableResult
     public func moveTab(_ tabId: TabID, toPane targetPaneId: PaneID, atIndex index: Int? = nil) -> Bool {
         guard let (sourcePane, sourceIndex) = findTabInternal(tabId) else { return false }
-        guard let targetPane = internalController.rootNode.findPane(PaneID(id: targetPaneId.id)) else { return false }
+        guard let targetPane = internalController.paneState(for: targetPaneId) else { return false }
 
         let tabItem = sourcePane.tabs[sourceIndex]
         let movedTab = Tab(from: tabItem)
         let sourcePaneId = sourcePane.id
 
         if sourcePaneId == targetPane.id {
+            guard configuration.allowTabReordering else { return false }
             // Reorder within same pane.
             let destinationIndex: Int = {
                 if let index { return max(0, min(index, sourcePane.tabs.count)) }
@@ -366,6 +426,7 @@ public final class BonsplitController {
             return true
         }
 
+        guard configuration.allowCrossPaneTabMove else { return false }
         internalController.moveTab(tabItem, from: sourcePaneId, to: targetPane.id, atIndex: index)
         delegate?.splitTabBar(self, didMoveTab: movedTab, fromPane: sourcePaneId, toPane: targetPane.id)
         notifyGeometryChange()
@@ -379,6 +440,7 @@ public final class BonsplitController {
     /// - Returns: true if reordered.
     @discardableResult
     public func reorderTab(_ tabId: TabID, toIndex: Int) -> Bool {
+        guard configuration.allowTabReordering else { return false }
         guard let (pane, sourceIndex) = findTabInternal(tabId) else { return false }
         let destinationIndex = max(0, min(toIndex, pane.tabs.count))
         pane.moveTab(from: sourceIndex, to: destinationIndex)
@@ -437,23 +499,27 @@ public final class BonsplitController {
                 hasCustomTitle: tab.hasCustomTitle,
                 icon: tab.icon,
                 iconImageData: tab.iconImageData,
+                iconAsset: tab.iconAsset,
                 kind: tab.kind,
                 isDirty: tab.isDirty,
                 showsNotificationBadge: tab.showsNotificationBadge,
                 isLoading: tab.isLoading,
                 isAudioMuted: tab.isAudioMuted,
-                isPinned: tab.isPinned
+                isAudioPlaying: tab.isAudioPlaying,
+                isPinned: tab.isPinned,
+                showsRemoteIndicator: tab.showsRemoteIndicator
             )
         } else {
             internalTab = nil
         }
 
         // Perform split
+        let dividerPosition = normalizedInitialDividerPosition(initialDividerPosition)
         internalController.splitPane(
             PaneID(id: targetPaneId.id),
             orientation: orientation,
             with: internalTab,
-            initialDividerPosition: initialDividerPosition
+            initialDividerPosition: dividerPosition
         )
 
         // Find new pane (will be focused after split)
@@ -502,21 +568,25 @@ public final class BonsplitController {
             hasCustomTitle: tab.hasCustomTitle,
             icon: tab.icon,
             iconImageData: tab.iconImageData,
+            iconAsset: tab.iconAsset,
             kind: tab.kind,
             isDirty: tab.isDirty,
             showsNotificationBadge: tab.showsNotificationBadge,
             isLoading: tab.isLoading,
             isAudioMuted: tab.isAudioMuted,
-            isPinned: tab.isPinned
+            isAudioPlaying: tab.isAudioPlaying,
+            isPinned: tab.isPinned,
+            showsRemoteIndicator: tab.showsRemoteIndicator
         )
 
         // Perform split with insertion side.
+        let dividerPosition = normalizedInitialDividerPosition(initialDividerPosition)
         internalController.splitPaneWithTab(
             PaneID(id: targetPaneId.id),
             orientation: orientation,
             tab: internalTab,
             insertFirst: insertFirst,
-            initialDividerPosition: initialDividerPosition
+            initialDividerPosition: dividerPosition
         )
 
         let newPaneId = focusedPaneId!
@@ -527,6 +597,16 @@ public final class BonsplitController {
         notifyGeometryChange()
 
         return newPaneId
+    }
+
+    private func normalizedInitialDividerPosition(_ position: CGFloat?) -> CGFloat {
+        // A nil position must not bypass the configured range: the internal
+        // controller's 0.5 fallback can sit outside a narrowed range, so the
+        // default is clamped here exactly like an explicit position.
+        min(
+            max(position ?? 0.5, configuration.dividerPositionRange.lowerBound),
+            configuration.dividerPositionRange.upperBound
+        )
     }
 
     /// Split a pane by moving an existing tab into the new pane.
@@ -548,7 +628,8 @@ public final class BonsplitController {
         movingTab tabId: TabID,
         insertFirst: Bool
     ) -> PaneID? {
-        guard configuration.allowSplits else { return nil }
+        guard configuration.allowSplits,
+              configuration.allowCrossPaneTabMove else { return nil }
 
         // Find the existing tab and its source pane.
         guard let (sourcePane, tabIndex) = findTabInternal(tabId) else { return nil }
@@ -556,6 +637,7 @@ public final class BonsplitController {
 
         // Default target to the tab's current pane to match edge-drop behavior on the source pane.
         let targetPaneId = paneId ?? sourcePane.id
+        guard internalController.paneState(for: targetPaneId) != nil else { return nil }
 
         // Check with delegate
         if delegate?.splitTabBar(self, shouldSplitPane: targetPaneId, orientation: orientation) == false {
@@ -563,26 +645,33 @@ public final class BonsplitController {
         }
 
         // Remove from source first.
-        sourcePane.removeTab(tabItem.id)
+        guard internalController.removeTab(tabItem.id, fromPane: sourcePane.id) != nil else {
+            return nil
+        }
 
         if sourcePane.tabs.isEmpty {
             if sourcePane.id == targetPaneId {
                 // Keep a placeholder tab so the original pane isn't left "tabless".
                 // This makes the empty side closable via tab close, and avoids apps
                 // needing to special-case empty panes.
-                sourcePane.addTab(TabItem(title: "Empty", icon: nil), select: true)
-            } else if internalController.rootNode.allPaneIds.count > 1 {
+                internalController.addTab(
+                    TabItem(title: "Empty", icon: nil),
+                    toPane: sourcePane.id
+                )
+            } else if internalController.paneCount > 1 {
                 // If the source pane is now empty, close it (unless it's also the split target).
                 internalController.closePane(sourcePane.id)
             }
         }
 
-        // Perform split with the moved tab.
+        // Perform split with the moved tab. Forward the clamped default so the
+        // moved-tab path honors dividerPositionRange like the other overloads.
         internalController.splitPaneWithTab(
             PaneID(id: targetPaneId.id),
             orientation: orientation,
             tab: tabItem,
-            insertFirst: insertFirst
+            insertFirst: insertFirst,
+            initialDividerPosition: normalizedInitialDividerPosition(nil)
         )
 
         let newPaneId = focusedPaneId!
@@ -601,7 +690,7 @@ public final class BonsplitController {
     @discardableResult
     public func closePane(_ paneId: PaneID) -> Bool {
         // Don't close if it's the last pane and not allowed
-        if !configuration.allowCloseLastPane && internalController.rootNode.allPaneIds.count <= 1 {
+        if !configuration.allowCloseLastPane && internalController.paneCount <= 1 {
             return false
         }
 
@@ -684,6 +773,61 @@ public final class BonsplitController {
         return togglePaneZoom(inPane: paneId)
     }
 
+    // MARK: - Full Width Tab Mode
+
+    /// Pane IDs whose tab chrome is currently rendered in full-width-tab mode.
+    public var fullWidthTabModePaneIds: [PaneID] {
+        internalController.rootNode.allPanes
+            .filter(\.isFullWidthTabMode)
+            .map(\.id)
+    }
+
+    /// Set full-width-tab mode for a pane.
+    ///
+    /// - Parameters:
+    ///   - enabled: Whether the pane should render the selected tab as a full-width title header.
+    ///   - pane: The pane to update.
+    /// - Returns: `true` when the pane exists and was updated; otherwise `false`.
+    @discardableResult
+    public func setFullWidthTabMode(_ enabled: Bool, inPane pane: PaneID) -> Bool {
+        guard let paneState = internalController.paneState(for: pane) else { return false }
+        paneState.isFullWidthTabMode = enabled
+        return true
+    }
+
+    /// Return whether a pane is currently in full-width-tab mode.
+    ///
+    /// Unknown panes are treated as off and return `false`.
+    public func isFullWidthTabMode(inPane pane: PaneID) -> Bool {
+        internalController.paneState(for: pane)?.isFullWidthTabMode ?? false
+    }
+
+    /// Toggle full-width-tab mode for a pane.
+    ///
+    /// - Parameter pane: The pane to toggle.
+    /// - Returns: The new mode state when the pane exists. Returns `false` without mutating state when the pane is unknown.
+    @discardableResult
+    public func toggleFullWidthTabMode(inPane pane: PaneID) -> Bool {
+        guard let paneState = internalController.paneState(for: pane) else { return false }
+        paneState.isFullWidthTabMode.toggle()
+        return paneState.isFullWidthTabMode
+    }
+
+    /// Request a tab-chrome full-width-tab toggle for a specific tab.
+    /// Hosts can intercept this to run their own focus/layout reconciliation.
+    @discardableResult
+    public func requestTabFullWidthToggle(for tabId: TabID, inPane paneId: PaneID) -> Bool {
+        guard let (pane, _) = findTabInternal(tabId),
+              pane.id == paneId else { return false }
+        if pane.selectedTabId != tabId.id {
+            selectTab(tabId)
+        }
+        if let onTabFullWidthToggleRequest {
+            return onTabFullWidthToggleRequest(tabId, paneId)
+        }
+        return toggleFullWidthTabMode(inPane: paneId)
+    }
+
     // MARK: - Context Menu Shortcut Hints
 
     /// Keyboard shortcuts to display in tab context menus, keyed by context action.
@@ -712,15 +856,29 @@ public final class BonsplitController {
 
     /// Get tabs in a specific pane
     public func tabs(inPane paneId: PaneID) -> [Tab] {
-        guard let pane = internalController.rootNode.findPane(PaneID(id: paneId.id)) else {
+        guard let pane = internalController.paneState(for: paneId) else {
             return []
         }
         return pane.tabs.map { Tab(from: $0) }
     }
 
+    /// Get the pane that currently owns a tab.
+    ///
+    /// This lookup is constant time and does not walk the split tree.
+    public func paneId(containing tabId: TabID) -> PaneID? {
+        internalController.paneId(containing: tabId.id)
+    }
+
+    /// Get the selected tab ID in a pane.
+    ///
+    /// This lookup is constant time and does not scan the pane's tabs.
+    public func selectedTabId(inPane paneId: PaneID) -> TabID? {
+        internalController.selectedTabId(inPane: paneId).map(TabID.init(id:))
+    }
+
     /// Get selected tab in a pane
     public func selectedTab(inPane paneId: PaneID) -> Tab? {
-        guard let pane = internalController.rootNode.findPane(PaneID(id: paneId.id)),
+        guard let pane = internalController.paneState(for: paneId),
               let selected = pane.selectedTab else {
             return nil
         }
@@ -735,7 +893,7 @@ public final class BonsplitController {
         let paneBounds = internalController.rootNode.computePaneBounds()
 
         let paneGeometries = paneBounds.map { bounds -> PaneGeometry in
-            let pane = internalController.rootNode.findPane(bounds.paneId)
+            let pane = internalController.paneState(for: bounds.paneId)
             let pixelFrame = PixelRect(
                 x: Double(bounds.bounds.minX * containerFrame.width + containerFrame.origin.x),
                 y: Double(bounds.bounds.minY * containerFrame.height + containerFrame.origin.y),
@@ -804,6 +962,7 @@ public final class BonsplitController {
                 id: splitState.id.uuidString,
                 orientation: splitState.orientation == .horizontal ? "horizontal" : "vertical",
                 dividerPosition: Double(splitState.dividerPosition),
+                imposedFirstExtent: splitState.imposedFirstExtent.map(Double.init),
                 first: buildExternalTree(from: splitState.first, containerFrame: containerFrame, bounds: firstBounds),
                 second: buildExternalTree(from: splitState.second, containerFrame: containerFrame, bounds: secondBounds)
             )
@@ -818,9 +977,10 @@ public final class BonsplitController {
 
     // MARK: - Geometry Update API
 
-    /// Set divider position for a split node (0.0-1.0)
+    /// Set divider position for a split node (0.0-1.0), clearing any exact
+    /// imposed extent so fraction-based callers take ownership of the divider.
     /// - Parameters:
-    ///   - position: The new divider position (clamped to 0.1-0.9)
+    ///   - position: The new divider position (clamped to the configured range)
     ///   - splitId: The UUID of the split to update
     ///   - fromExternal: Set to true to suppress outgoing notifications (prevents loops)
     /// - Returns: true if the split was found and updated
@@ -832,9 +992,17 @@ public final class BonsplitController {
             internalController.isExternalUpdateInProgress = true
         }
 
-        // Clamp position to valid range
-        let clampedPosition = min(max(position, 0.1), 0.9)
+        let range = configuration.dividerPositionRange
+        let clampedPosition = min(max(position, range.lowerBound), range.upperBound)
+        let clearedImposition = split.imposedFirstExtent != nil
+        if clearedImposition {
+            split.imposedFirstExtent = nil
+            split.imposedEpoch &+= 1
+        }
         split.dividerPosition = clampedPosition
+        if clearedImposition {
+            split.syncDividerNow?()
+        }
 
         if fromExternal {
             // Use a slight delay to allow the UI to update before re-enabling notifications
@@ -843,6 +1011,52 @@ public final class BonsplitController {
             }
         }
 
+        return true
+    }
+
+    /// Imposes an exact first-child extent, in points, on a split — or
+    /// clears it with nil. While imposed, layout places the divider at
+    /// exactly this many points (clamped to pane minimums) instead of
+    /// scaling `dividerPosition`, and the mirrored fraction is kept coherent
+    /// for readers. A user divider drag clears the imposition and returns
+    /// the split to fraction semantics. Use this when pane contents are
+    /// grid-quantized (terminal cells) and a normalized fraction cannot
+    /// express the required pixel size losslessly. Repeating the same extent
+    /// is idempotent; after an external constraint change, use
+    /// `retryImposedFirstExtent(forSplit:)` to request one fresh bounded apply.
+    public func setImposedFirstExtent(
+        _ extent: CGFloat?, forSplit splitId: UUID, fromExternal: Bool = false
+    ) -> Bool {
+        guard let split = internalController.findSplit(splitId) else { return false }
+        if fromExternal {
+            internalController.isExternalUpdateInProgress = true
+        }
+        let normalizedExtent = extent.map { max(0, $0) }
+        if split.imposedFirstExtent != normalizedExtent {
+            split.imposedFirstExtent = normalizedExtent
+            split.imposedEpoch &+= 1
+        }
+        split.syncDividerNow?()
+        if fromExternal {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.internalController.isExternalUpdateInProgress = false
+            }
+        }
+        return true
+    }
+
+    /// Requests one fresh apply of a split's current imposed extent.
+    ///
+    /// Use this only after constraints that previously prevented the extent
+    /// have changed. Normal layout planning should keep calling
+    /// `setImposedFirstExtent(_:forSplit:fromExternal:)`, whose identical
+    /// updates are intentionally idempotent.
+    public func retryImposedFirstExtent(forSplit splitId: UUID) -> Bool {
+        guard let split = internalController.findSplit(splitId),
+              split.imposedFirstExtent != nil
+        else { return false }
+        split.imposedEpoch &+= 1
+        split.syncDividerNow?()
         return true
     }
 
@@ -877,12 +1091,10 @@ public final class BonsplitController {
     // MARK: - Private Helpers
 
     private func findTabInternal(_ tabId: TabID) -> (PaneState, Int)? {
-        for pane in internalController.rootNode.allPanes {
-            if let index = pane.tabs.firstIndex(where: { $0.id == tabId.id }) {
-                return (pane, index)
-            }
-        }
-        return nil
+        guard let paneId = internalController.paneId(containing: tabId.id),
+              let pane = internalController.paneState(for: paneId),
+              let index = pane.tabs.firstIndex(where: { $0.id == tabId.id }) else { return nil }
+        return (pane, index)
     }
 
     private func notifyTabSelection() {
