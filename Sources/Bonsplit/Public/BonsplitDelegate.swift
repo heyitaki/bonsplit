@@ -27,6 +27,10 @@ public protocol BonsplitDelegate: AnyObject {
     /// Called when a tab is moved between panes.
     func splitTabBar(_ controller: BonsplitController, didMoveTab tab: Tab, fromPane source: PaneID, toPane destination: PaneID)
 
+    /// Called after the user reorders tabs within a single pane (drag-reorder).
+    /// `orderedTabIds` is the new full order of that pane's tabs.
+    func splitTabBar(_ controller: BonsplitController, didReorderTabsInPane pane: PaneID, orderedTabIds: [TabID])
+
     // MARK: - Split Lifecycle (Veto Operations)
 
     /// Called when a split is about to be created.
@@ -72,6 +76,19 @@ public protocol BonsplitDelegate: AnyObject {
 
     /// Called to check if notifications should be sent during divider drag (opt-in for real-time sync)
     func splitTabBar(_ controller: BonsplitController, shouldNotifyDuringDrag: Bool) -> Bool
+
+    /// A divider drag session started: the mouse went down on a divider and
+    /// AppKit's tracking loop is running. Until the matching end, the drag
+    /// owns divider geometry — hosts that impose extents should defer.
+    func splitTabBarDividerDragDidBegin(_ controller: BonsplitController)
+
+    /// The divider drag session ended (mouse released). Delivered from the
+    /// tracking lifecycle itself, so it fires even when no resize callback
+    /// coincides with the release; the final geometry has already been
+    /// reported through `didChangeGeometry`. That report is delivered even
+    /// inside the brief suppression window a `fromExternal` update opens, so
+    /// a release right after an external echo cannot lose it.
+    func splitTabBarDividerDragDidEnd(_ controller: BonsplitController)
 }
 
 // MARK: - Default Implementations (all methods optional)
@@ -83,6 +100,7 @@ public extension BonsplitDelegate {
     func splitTabBar(_ controller: BonsplitController, didCloseTab tabId: TabID, fromPane pane: PaneID) {}
     func splitTabBar(_ controller: BonsplitController, didSelectTab tab: Tab, inPane pane: PaneID) {}
     func splitTabBar(_ controller: BonsplitController, didMoveTab tab: Tab, fromPane source: PaneID, toPane destination: PaneID) {}
+    func splitTabBar(_ controller: BonsplitController, didReorderTabsInPane pane: PaneID, orderedTabIds: [TabID]) {}
     func splitTabBar(_ controller: BonsplitController, shouldSplitPane pane: PaneID, orientation: SplitOrientation) -> Bool { true }
     func splitTabBar(_ controller: BonsplitController, shouldClosePane pane: PaneID) -> Bool { true }
     func splitTabBar(_ controller: BonsplitController, didSplitPane originalPane: PaneID, newPane: PaneID, orientation: SplitOrientation) {}
@@ -94,4 +112,6 @@ public extension BonsplitDelegate {
     func splitTabBar(_ controller: BonsplitController, didRequestTabMoveToDestination destinationId: String, for tab: Tab, inPane pane: PaneID) {}
     func splitTabBar(_ controller: BonsplitController, didChangeGeometry snapshot: LayoutSnapshot) {}
     func splitTabBar(_ controller: BonsplitController, shouldNotifyDuringDrag: Bool) -> Bool { false }
+    func splitTabBarDividerDragDidBegin(_ controller: BonsplitController) {}
+    func splitTabBarDividerDragDidEnd(_ controller: BonsplitController) {}
 }
