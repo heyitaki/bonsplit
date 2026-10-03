@@ -5,6 +5,7 @@
 "command.moveTabToRightPane.title" = "右のペインへ移動";
 "tabContext.renameTab" = "タブ名を変更…";
 "tabContext.removeCustomTabName" = "カスタムタブ名を削除";
+"tabContext.closeTab" = "タブを閉じる";
 "tabContext.closeTabsToLeft" = "左側のタブを閉じる";
 "tabContext.closeTabsToRight" = "右側のタブを閉じる";
 "tabContext.closeOtherTabs" = "他のタブを閉じる";
@@ -17,11 +18,21 @@
 "tabContext.audioMutedAccessibility" = "ミュート中";
 "tabContext.exitZoom" = "ズームを終了";
 "tabContext.zoomPane" = "ペインをズーム";
+"tabContext.enterFullWidthTab" = "タブを全幅表示";
+"tabContext.exitFullWidthTab" = "全幅表示を解除";
+"tabContext.switchTab" = "タブを切り替え";
+"tabContext.paneActions" = "ペイン操作";
 "tabContext.unpinTab" = "タブのピン留めを解除";
 "tabContext.pinTab" = "タブをピン留め";
 "tabContext.markTabAsRead" = "タブを既読にする";
 "tabContext.markTabAsUnread" = "タブを未読にする";
 "tabContext.forkConversation" = "会話をフォーク";
+"tabContext.forkConversation.default.right" = "会話を右にフォーク";
+"tabContext.forkConversation.default.left" = "会話を左にフォーク";
+"tabContext.forkConversation.default.top" = "会話を上にフォーク";
+"tabContext.forkConversation.default.bottom" = "会話を下にフォーク";
+"tabContext.forkConversation.default.newTab" = "会話を新しいタブにフォーク";
+"tabContext.forkConversation.default.newWorkspace" = "会話を新しいワークスペースにフォーク";
 "tabContext.forkConversationTo" = "会話のフォーク先";
 "tabContext.forkConversation.right" = "右分割";
 "tabContext.forkConversation.left" = "左分割";
@@ -29,3 +40,17 @@
 "tabContext.forkConversation.bottom" = "下分割";
 "tabContext.forkConversation.newTab" = "新規タブ";
 "tabContext.forkConversation.newWorkspace" = "新規ワークスペース";
+"tabContext.disconnectRemote" = "SSH接続を解除";
+"tabContext.remoteConnectedAccessibility" = "SSH接続中";
+"tab.close.accessibilityLabel" = "タブを閉じる";
+
+/* Shared terminal sizing */
+"tabContext.sizeToMyWindow" = "ウィンドウにサイズを合わせる";
+"tabContext.terminalSizeHeader" = "ターミナルサイズ";
+"tabContext.sizeMode.largest" = "最大のウィンドウ";
+"tabContext.sizeMode.priority" = "優先リスト…";
+"tabContext.sizeMode.fixed" = "固定サイズ…";
+"tabContext.disconnectOthers" = "他の接続を切断…";
+"tabContext.sizeMode.followLatest" = "最新の入力に合わせる";
+"tabContext.sizeMode.fitEveryone" = "全員に合わせる";
+"tabPresence.toggleSizePanel" = "ターミナルサイズパネルを表示または非表示にします";
