@@ -69,6 +69,9 @@ public struct BonsplitConfiguration: Sendable {
     /// Whether to allow moving tabs between panes
     public var allowCrossPaneTabMove: Bool
 
+    /// Whether tabs install and present their standard context menu.
+    public var allowsTabContextMenu: Bool
+
     /// Whether to automatically close empty panes
     public var autoCloseEmptyPanes: Bool
 
@@ -86,6 +89,13 @@ public struct BonsplitConfiguration: Sendable {
 
     /// Controls when pane tab bars are shown
     public var tabBarVisibility: TabBarVisibility
+
+    /// Normalized range allowed for split divider positions.
+    public var dividerPositionRange: ClosedRange<CGFloat> {
+        didSet {
+            dividerPositionRange = Self.normalizedDividerPositionRange(dividerPositionRange)
+        }
+    }
 
     // MARK: - Appearance
 
@@ -116,11 +126,13 @@ public struct BonsplitConfiguration: Sendable {
         allowCloseLastPane: Bool = false,
         allowTabReordering: Bool = true,
         allowCrossPaneTabMove: Bool = true,
+        allowsTabContextMenu: Bool = true,
         autoCloseEmptyPanes: Bool = true,
         allowsClickToCreateNewTab: Bool = true,
         contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch,
         newTabPosition: NewTabPosition = .current,
         tabBarVisibility: TabBarVisibility = .always,
+        dividerPositionRange: ClosedRange<CGFloat> = 0.1...0.9,
         appearance: Appearance = .default
     ) {
         self.allowSplits = allowSplits
@@ -128,12 +140,22 @@ public struct BonsplitConfiguration: Sendable {
         self.allowCloseLastPane = allowCloseLastPane
         self.allowTabReordering = allowTabReordering
         self.allowCrossPaneTabMove = allowCrossPaneTabMove
+        self.allowsTabContextMenu = allowsTabContextMenu
         self.autoCloseEmptyPanes = autoCloseEmptyPanes
         self.allowsClickToCreateNewTab = allowsClickToCreateNewTab
         self.contentViewLifecycle = contentViewLifecycle
         self.newTabPosition = newTabPosition
         self.tabBarVisibility = tabBarVisibility
+        self.dividerPositionRange = Self.normalizedDividerPositionRange(dividerPositionRange)
         self.appearance = appearance
+    }
+
+    private static func normalizedDividerPositionRange(
+        _ range: ClosedRange<CGFloat>
+    ) -> ClosedRange<CGFloat> {
+        let lower = min(max(range.lowerBound, 0), 1)
+        let upper = min(max(range.upperBound, lower), 1)
+        return lower...upper
     }
 }
 
@@ -283,10 +305,61 @@ extension BonsplitConfiguration {
             }
         }
 
+        /// How a button exposes a host-provided menu.
+        ///
+        /// The menu itself comes from
+        /// ``BonsplitDelegate/splitTabBar(_:menuForSplitActionButton:inPane:)``.
+        public enum MenuBehavior: String, Sendable, Codable, Hashable {
+            /// No menu. Click performs ``SplitActionButton/action``.
+            case none
+            /// Click performs the action; right-click or press-and-hold opens the menu.
+            case secondary
+            /// Click opens the menu; the action is not performed by a click.
+            case primary
+        }
+
         public var id: String
         public var icon: Icon
         public var tooltip: String?
         public var action: Action
+        /// Performs the action on mouse down. Ignored when the button has a
+        /// menu or an alternate action, which act on mouse up.
+        public var activatesOnMouseDown: Bool
+        /// Action performed when the button is clicked with the Option key held.
+        /// When nil, Option-click performs ``action``.
+        public var alternateAction: Action?
+        /// Whether and how the button opens a host-provided menu.
+        public var menuBehavior: MenuBehavior
+        /// Marks a button whose menu offers a new terminal even though its
+        /// click action is something else. Double-clicking empty tab bar space
+        /// creates a terminal when a `.newTerminal` button or a button with
+        /// this flag is shown.
+        public var offersNewTerminal: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case icon
+            case tooltip
+            case action
+            case activatesOnMouseDown
+            case alternateAction
+            case menuBehavior
+            case offersNewTerminal
+        }
+
+        /// Whether this button uses the menu-aware interaction path
+        /// (right-click / press-and-hold menu, or Option-click alternate).
+        public var usesMenuInteraction: Bool {
+            menuBehavior != .none || alternateAction != nil
+        }
+
+        /// The action a click performs, given whether Option was held.
+        public func resolvedAction(optionKeyHeld: Bool) -> Action {
+            if optionKeyHeld, let alternateAction {
+                return alternateAction
+            }
+            return action
+        }
 
         public var systemImage: String {
             if case .systemImage(let name) = icon {
@@ -299,13 +372,21 @@ extension BonsplitConfiguration {
             id: String,
             systemImage: String,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false,
+            alternateAction: Action? = nil,
+            menuBehavior: MenuBehavior = .none,
+            offersNewTerminal: Bool = false
         ) {
             self.init(
                 id: id,
                 icon: .systemImage(systemImage),
                 tooltip: tooltip,
-                action: action
+                action: action,
+                activatesOnMouseDown: activatesOnMouseDown,
+                alternateAction: alternateAction,
+                menuBehavior: menuBehavior,
+                offersNewTerminal: offersNewTerminal
             )
         }
 
@@ -313,12 +394,50 @@ extension BonsplitConfiguration {
             id: String,
             icon: Icon,
             tooltip: String? = nil,
-            action: Action
+            action: Action,
+            activatesOnMouseDown: Bool = false,
+            alternateAction: Action? = nil,
+            menuBehavior: MenuBehavior = .none,
+            offersNewTerminal: Bool = false
         ) {
             self.id = id
             self.icon = icon
             self.tooltip = tooltip
             self.action = action
+            self.activatesOnMouseDown = activatesOnMouseDown
+            self.alternateAction = alternateAction
+            self.menuBehavior = menuBehavior
+            self.offersNewTerminal = offersNewTerminal
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            icon = try container.decode(Icon.self, forKey: .icon)
+            tooltip = try container.decodeIfPresent(String.self, forKey: .tooltip)
+            action = try container.decode(Action.self, forKey: .action)
+            activatesOnMouseDown = try container.decodeIfPresent(Bool.self, forKey: .activatesOnMouseDown) ?? false
+            alternateAction = try container.decodeIfPresent(Action.self, forKey: .alternateAction)
+            menuBehavior = try container.decodeIfPresent(MenuBehavior.self, forKey: .menuBehavior) ?? .none
+            offersNewTerminal = try container.decodeIfPresent(Bool.self, forKey: .offersNewTerminal) ?? false
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(icon, forKey: .icon)
+            try container.encodeIfPresent(tooltip, forKey: .tooltip)
+            try container.encode(action, forKey: .action)
+            if activatesOnMouseDown {
+                try container.encode(activatesOnMouseDown, forKey: .activatesOnMouseDown)
+            }
+            try container.encodeIfPresent(alternateAction, forKey: .alternateAction)
+            if menuBehavior != .none {
+                try container.encode(menuBehavior, forKey: .menuBehavior)
+            }
+            if offersNewTerminal {
+                try container.encode(offersNewTerminal, forKey: .offersNewTerminal)
+            }
         }
 
         public static let newTerminal = SplitActionButton(
@@ -449,19 +568,42 @@ extension BonsplitConfiguration {
             /// When unset, Bonsplit derives separators from the chrome background.
             public var borderHex: String?
 
+            /// Optional hex color (`#RRGGBB` or `#RRGGBBAA`) for the divider between split panes only.
+            /// When unset, Bonsplit falls back to `borderHex`, then derives it from the chrome background.
+            public var dividerHex: String?
+
             public init(
                 backgroundHex: String? = nil,
                 tabBarBackgroundHex: String? = nil,
                 splitButtonBackdropHex: String? = nil,
                 paneBackgroundHex: String? = nil,
-                borderHex: String? = nil
+                borderHex: String? = nil,
+                dividerHex: String? = nil
             ) {
                 self.backgroundHex = backgroundHex
                 self.tabBarBackgroundHex = tabBarBackgroundHex
                 self.splitButtonBackdropHex = splitButtonBackdropHex
                 self.paneBackgroundHex = paneBackgroundHex
                 self.borderHex = borderHex
+                self.dividerHex = dividerHex
             }
+        }
+
+        /// Controls how surface tabs are sized within a pane's tab bar.
+        public enum TabWidthMode: Sendable, Equatable, Codable {
+            /// Tabs use a fixed width clamped to `tabMinWidth...tabMaxWidth` and the
+            /// tab strip scrolls horizontally once the tabs overflow the pane. This is
+            /// the default and preserves Bonsplit's historical layout exactly.
+            case fixed
+
+            /// Tabs stretch to fill the pane's available tab-bar width, distributing the
+            /// space equally between them.
+            ///
+            /// A single tab spans the full available width; multiple tabs share it
+            /// evenly. When the tabs would overflow the pane at their natural width,
+            /// the strip falls back to ``fixed`` sizing and scrolls, so this mode never
+            /// shrinks tabs below their natural width.
+            case fill
         }
 
         // MARK: - Tab Bar
@@ -483,6 +625,10 @@ extension BonsplitConfiguration {
         /// Spacing between tabs
         public var tabSpacing: CGFloat
 
+        /// Controls whether tabs use a fixed width and scroll, or stretch to fill the
+        /// pane's available tab-bar width. Defaults to ``TabWidthMode/fixed``.
+        public var tabWidthMode: TabWidthMode
+
         // MARK: - Split View
 
         /// Minimum width of a pane
@@ -490,6 +636,21 @@ extension BonsplitConfiguration {
 
         /// Minimum height of a pane
         public var minimumPaneHeight: CGFloat
+
+        /// Thickness, in points, of the divider drawn between split panes.
+        ///
+        /// Defaults to `1` to match the historical hairline divider. Hosts can
+        /// raise this to make the separator between adjacent panes easier to see.
+        /// Values are clamped to a sane range when applied to the split view.
+        public var dividerThickness: CGFloat
+
+        /// Extra points on each side of the drawn divider that still count as
+        /// the divider for drag hit-testing (the effective divider rect).
+        ///
+        /// Defaults to `5`, matching the historical hardcoded expansion. Hosts
+        /// that show a resize cursor over a wider band must raise this to the
+        /// same value so every point that shows the cursor can start a drag.
+        public var dividerHitExpansion: CGFloat
 
         /// Whether to show split buttons in the tab bar
         public var showSplitButtons: Bool
@@ -502,7 +663,9 @@ extension BonsplitConfiguration {
             }
         }
 
-        /// When true, split buttons are only visible on hover
+        /// When true, split buttons are only visible while the pointer is over the
+        /// tab bar. They fade in as an overlay instead of reserving a lane, the
+        /// same way they behave in minimal mode.
         public var splitButtonsOnHover: Bool
 
         /// Optional explicit backdrop style for the tab bar's right-side action buttons.
@@ -572,8 +735,11 @@ extension BonsplitConfiguration {
             tabMaxWidth: CGFloat = 220,
             tabTitleFontSize: CGFloat = 11,
             tabSpacing: CGFloat = 0,
+            tabWidthMode: TabWidthMode = .fixed,
             minimumPaneWidth: CGFloat = 100,
             minimumPaneHeight: CGFloat = 100,
+            dividerThickness: CGFloat = 1,
+            dividerHitExpansion: CGFloat = 5,
             showSplitButtons: Bool = true,
             splitButtons: [SplitActionButton] = SplitActionButton.defaults,
             splitButtonsOnHover: Bool = false,
@@ -593,8 +759,11 @@ extension BonsplitConfiguration {
             self.tabMaxWidth = tabMaxWidth
             self.tabTitleFontSize = tabTitleFontSize
             self.tabSpacing = tabSpacing
+            self.tabWidthMode = tabWidthMode
             self.minimumPaneWidth = minimumPaneWidth
             self.minimumPaneHeight = minimumPaneHeight
+            self.dividerThickness = dividerThickness
+            self.dividerHitExpansion = dividerHitExpansion
             self.showSplitButtons = showSplitButtons
             self.splitButtons = Self.uniqueSplitButtons(splitButtons)
             self.splitButtonsOnHover = splitButtonsOnHover

@@ -7,15 +7,27 @@ final class PaneState: Identifiable {
     let id: PaneID
     var tabs: [TabItem]
     var selectedTabId: UUID?
+    var isFullWidthTabMode: Bool = false
+    /// Host-provided per-pane action buttons; nil uses the configured defaults.
+    var splitButtonsOverride: [BonsplitConfiguration.SplitActionButton]?
+
+    static func uniqueSplitButtons(
+        _ buttons: [BonsplitConfiguration.SplitActionButton]
+    ) -> [BonsplitConfiguration.SplitActionButton] {
+        var seenIds = Set<String>()
+        return buttons.filter { seenIds.insert($0.id).inserted }
+    }
 
     init(
         id: PaneID = PaneID(),
         tabs: [TabItem] = [],
-        selectedTabId: UUID? = nil
+        selectedTabId: UUID? = nil,
+        isFullWidthTabMode: Bool = false
     ) {
         self.id = id
         self.tabs = tabs
         self.selectedTabId = selectedTabId ?? tabs.first?.id
+        self.isFullWidthTabMode = isFullWidthTabMode
     }
 
     /// Currently selected tab
